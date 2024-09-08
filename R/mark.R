@@ -197,7 +197,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   # turn @ref into [@ref](#ref) and resolve cross-references later in JS; for
   # latex output, turn @ref to \ref{}
   r_ref = '([a-z]+)-([-_[:alnum:]]+)'  # must start with letters followed by -
-  r5 = paste0('(^|(?<=\\s|\\())@', r_ref)
+  r5 = paste0('(^|(?<=\\s|\\())@', r_ref, '(?!\\])')
   if (test_feature('cross_refs', r5)) {
     text[p] = match_replace(text[p], r5, function(x) {
       sprintf('[%s](%s)', x, sub('^@', '#', x))
@@ -208,6 +208,8 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   ret = move_attrs(ret, format)  # apply attributes of the form {attr="value"}
 
   if (format == 'html') {
+    # don't disable check boxes
+    ret = gsub('(<li><input type="checkbox" [^>]*?)disabled="" (/>)', '\\1\\2', ret)
     if (has_math) {
       ret = gsub(sprintf('<code>%s(.{5,}?)%s</code>', id, id), '\\1', ret)
       # `\(math\)` may fail to render to <code>\(math\)</code> when backticks
@@ -373,6 +375,7 @@ build_output = function(format, options, template, meta) {
       if (!name %in% names(meta)) meta[[name]] <<- value
     }
     set_meta('css', 'default')
+    set_meta('plain-title', str_trim(commonmark::markdown_text(meta[['title']])))
     meta = set_math(meta, options, b)
     meta = set_highlight(meta, options, b)
     # if the class .line-numbers is present, add js/css for line numbers
@@ -388,7 +391,7 @@ build_output = function(format, options, template, meta) {
 # substitute all variables in template with their values
 sub_vars = function(tpl, meta) {
   # find all variables in the template
-  vars = unlist(regmatches(tpl, gregexpr('[$][-_[:alnum:]]+[$]', tpl)))
+  vars = unlist(match_full(tpl, '[$][-_[:alnum:]]+[$]'))
   # insert $body$ at last in case the body contain any $variables$ accidentally
   if (!is.na(i <- match('$body$', vars))) vars = c(vars[-i], vars[i])
   for (v in vars) {

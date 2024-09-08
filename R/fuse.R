@@ -48,7 +48,7 @@ crack = function(input, text = NULL) {
     '<(code|code_block) sourcepos="(\\d+):(\\d+)-(\\d+):(\\d+)"( info="[{]+',
     rx_engine, '[^"]*?[}]")? xml:space="[^>]*>([^<]*)<'
   )
-  m = regmatches(xml, gregexec(r, xml, perl = TRUE))[[1]] %|% matrix(character(), 9)
+  m = match_all(xml, r, perl = TRUE)[[1]] %|% matrix(character(), 9)
   # code blocks must have non-empty info strings
   m = m[, m[2, ] != 'code_block' | m[8, ] != '', drop = FALSE]
 
@@ -84,7 +84,7 @@ crack = function(input, text = NULL) {
     j = grepl(rx_inline, m[9, ])
   }
   m = m[, j, drop = FALSE]
-  n_start = unlist(lapply(res, function(x) x$lines[1]))  # starting line numbers
+  n_start = uapply(res, function(x) x$lines[1])  # starting line numbers
   j = findInterval(m[3, ], n_start)  # find which block each inline code belongs to
   for (i in seq_len(ncol(m))) {
     b = res[[j[i]]]; l = b$lines
@@ -127,7 +127,7 @@ crack = function(input, text = NULL) {
       }
       # possible comma-separated chunk options in header
       rx_opts = paste0('^(`{3,}|~{3,})\\s*([{]+)', rx_engine, '(.*?)\\s*[}]+\\s*$')
-      o = regmatches(code[1], regexec(rx_opts, code[1]))[[1]]
+      o = match_one(code[1], rx_opts)[[1]]
       if (length(o)) {
         # if two or more `{` is used, we will write chunk fences to output
         if (nchar(o[3]) > 1) b$fences = c(
@@ -169,7 +169,7 @@ crack = function(input, text = NULL) {
       x = lapply(seq_along(x), function(i) {
         z = x[i]
         if (i %% 2 == 1) return(z)
-        z = regmatches(z, regexec(rx_inline, z))[[1]][-1]
+        z = match_one(z, rx_inline)[[1]][-1]
         p2 = pos[, i / 2]; save_pos(p2)
         list(
           source = z[2], pos = p2,
@@ -342,7 +342,7 @@ get_loc = function(label) {
   l = .env$source_pos; n = length(l)
   if (n == 4) l = sprintf('#%d:%d-%d:%d', l[1], l[2], l[3], l[4])  # row1:col1-row2:col2
   if (n == 2) l = sprintf('#%d-%d', l[1], l[2])  # row1-row2
-  paste0(.env$input, l, if (label == '') ' ', label)
+  paste0(.env$input, l, if (label != '') paste0(' [', label, ']'))
 }
 
 # save line numbers in .env to be used in error messages
@@ -412,8 +412,14 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   if (!is.null(output_base <- output_path(input, output)))
     output_base = sans_ext(output_base)
 
+  opts = reactor()
+  # clean up the figure folder on exit if it's empty
+  on.exit(xfun::del_empty_dir({
+    if (dir.exists(fig.dir <- opts$fig.path)) fig.dir else dirname(fig.dir)
+  }), add = TRUE)
+
   # restore and clean up some objects on exit
-  opts = reactor(); opts2 = as.list(opts); on.exit(reactor(opts2), add = TRUE)
+  opts2 = as.list(opts); on.exit(reactor(opts2), add = TRUE)
   oenv = as.list(.env); on.exit(reset_env(oenv, .env), add = TRUE)
 
   # set working directory if unset
@@ -449,10 +455,6 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
     opts[[name]] = p
   }
   set_path('fig.path'); set_path('cache.path')
-  # clean up the figure folder on exit if it's empty
-  on.exit(xfun::del_empty_dir({
-    if (dir.exists(fig.dir <- opts$fig.path)) fig.dir else dirname(fig.dir)
-  }), add = TRUE, after = FALSE)
 
   .env$input = input
   res = .fuse(blocks, input, quiet)
@@ -486,10 +488,10 @@ fiss = function(input, output = '.R', text = NULL) {
   output = auto_output(input, output, NULL)
   blocks = crack(input, text)
   # TODO: what should we do for non-R code? also consider eval=FALSE and error=TRUE
-  res = unlist(lapply(blocks, function(b) {
+  res = uapply(blocks, function(b) {
     if (b$type == 'code_chunk' && !isFALSE(b$options$purl) && b$options$engine == 'r')
       c(b$source, '')
-  }))
+  })
   if (is_output_file(output)) write_utf8(res, output) else raw_string(res)
 }
 
@@ -498,13 +500,12 @@ fiss = function(input, output = '.R', text = NULL) {
   nms = vapply(blocks, function(x) x$options[['label']] %||% '', character(1))
   names(blocks) = nms
 
-  # a simple progress indicator
-  p_lab = ifelse(nms == '', '', sprintf(' [%s] ', nms))  # labels to display
-  # we need to know how many spaces we need to wipe out previous progress text
-  # of the form: X% | input_file#line1-line2 [label]
-  p_len = if (length(input)) nchar(input) else 0  # length of input path
-  p_len = p_len + max(c(0, nchar(p_lab))) + 4  # 4 == nchar('100%')
-  p_len = p_len + sum(nchar(sprintf('%d', blocks[[n]]$lines))) + 1 + 3  # 1 = '#'; 3 = ' | '
+  # a simple progress indicator: we need to know how many spaces we need to wipe
+  # out previous progress text of the form:
+  # xxx% | input_file#line1-line2 [label]
+  # ...4..3          1     1     .2     1
+  p_len = 4 + 3 + sum(nchar(input)) + 1 +
+    (sum(nchar(sprintf('%d', blocks[[n]]$lines))) + 1) + 2 + max(nchar(nms)) + 1
   p_clr = paste0('\r', strrep(' ', p_len), '\r')  # a string to clear the progress
   p_out = getOption('litedown.progress.output', stderr())
   p_yes = FALSE; t0 = Sys.time(); td = getOption('litedown.progress.delay', 2)
@@ -525,7 +526,7 @@ fiss = function(input, output = '.R', text = NULL) {
       "\033]8;%s;file://%s\a%s\033]8;;\a", link_pos(),
       normalize_path(input), input
     )
-    message('Quitting from ', get_loc(p_lab[k]))
+    message('Quitting from ', get_loc(nms[k]))
   }
   # suppress tidyverse progress bars
   opt = options(rstudio.notebook.executing = TRUE)
@@ -536,7 +537,7 @@ fiss = function(input, output = '.R', text = NULL) {
   res = character(n)
   for (i in seq_len(n)) {
     k = o[i]; b = blocks[[k]]; save_pos(b$lines)
-    p_bar(c(as.character(round((i - 1)/n * 100)), '%', ' | ', get_loc(p_lab[k])))
+    p_bar(c(as.character(round((i - 1)/n * 100)), '%', ' | ', get_loc(nms[k])))
     # record timing if requested
     if (!isFALSE(time <- timing_path())) t1 = Sys.time()
     res[k] = if (b$type == 'code_chunk') {
@@ -544,7 +545,7 @@ fiss = function(input, output = '.R', text = NULL) {
     } else {
       one_string(fuse_text(b), '')
     }
-    if (!isFALSE(time)) record_time(Sys.time() - t1, b$lines, p_lab[k])
+    if (!isFALSE(time)) record_time(Sys.time() - t1, b$lines, nms[k])
     p_bar(p_clr)
   }
   k = n
@@ -635,10 +636,10 @@ fuse_code = function(x, blocks) {
   }
 
   # fuse child documents (empty the `child` option to avoid infinite recursion)
-  if (length(opts$child)) return(unlist(lapply(reactor(child = NULL)$child, function(.) {
+  if (length(opts$child)) return(uapply(reactor(child = NULL)$child, function(.) {
     child = .env$child; .env$child = TRUE; on.exit(.env$child <- child)
     fuse(., output = 'markdown', envir = fuse_env(), quiet = TRUE)
-  })))
+  }))
 
   # the source code could be from these chunk options: file, code, or ref.label
   test_source = function(name) {
@@ -654,7 +655,7 @@ fuse_code = function(x, blocks) {
   } else if (test_source('code')) {
     x$source = opts$code
   } else if (test_source('ref.label')) {
-    x$source = unlist(lapply(blocks[opts$ref.label], `[[`, 'source'))
+    x$source = uapply(blocks[opts$ref.label], `[[`, 'source')
   }
 
   lab = opts$label
@@ -678,7 +679,6 @@ fuse_code = function(x, blocks) {
   env = opts$fig.env; alt = opts$fig.alt; cap = opts$fig.cap
   att = if (is.null(att <- opts$attr.plot)) '' else paste0('{', att, '}')
   if (is.null(alt)) alt = cap
-  if (is.null(alt)) alt = ''
   p1 = Filter(function(x) !is_plot(x), res)
   p2 = Filter(is_plot, res)
   # get the relative path of the plot directory
@@ -689,6 +689,13 @@ fuse_code = function(x, blocks) {
 
   # recycle alt and attributes for all plots
   pn = length(unlist(p2))
+  if (pn && is.null(alt)) {
+    # reminder about missing alt text if this option is set to TRUE
+    if (getOption('litedown.fig.alt', FALSE)) message(
+      "\nPlease provide a 'fig.alt' option to the code chunk at ", get_loc(lab)
+    )
+    alt = ''
+  }
   alt = rep(alt, length.out = pn)
   att = rep(att, length.out = pn)
   # if figure caption is provided, merge all plots in one env
@@ -724,7 +731,9 @@ fuse_code = function(x, blocks) {
       if (type == 'source') {
         a = c(paste0('.', lang), a)  # use engine name as class name
         # add line numbers
-        if (is_roaming()) a = c(a, sprintf('.line-numbers data-start="%d"', l1 + l2 - 1))
+        if (is_roaming()) a = c(
+          a, sprintf('.line-numbers .auto-numbers data-start="%d"', l1 + l2 - 1)
+        )
       } else {
         if (type == 'message') x = sub('\n$', '', x)
         x = split_lines(x)
@@ -796,7 +805,7 @@ sci_num = function(x) {
   r = '^(-)?([0-9.]+)e([-+])0*([0-9]+)$'
   x = format(signif(x, s), scientific = x != 0 && abs(log10(abs(x))) >= p)
   if (!grepl(r, x)) return(x)
-  n = regmatches(x, regexec(r, x))[[1]]
+  n = match_one(x, r)[[1]]
   sprintf(
     '%s%s10^{%s%s}', n[2], if (n[3] == '1') '' else paste(n[3], '\\times '),
     if (n[4] == '+') '' else n[4], n[5]

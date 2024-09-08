@@ -25,9 +25,13 @@ fuse_env = function() .env$global %||% globalenv()
 
 #' @export
 record_print.data.frame = function(x, ...) {
+  asis = inherits(x, 'AsIs')
   if (is.null(getOption('xfun.md_table.limit'))) {
-    opts = options(xfun.md_table.limit = 10); on.exit(options(opts), add = TRUE)
+    opts = options(xfun.md_table.limit = if (!asis) 10)
+    on.exit(options(opts), add = TRUE)
   }
+  if (asis) class(x) = setdiff(class(x), 'AsIs')
+  if (inherits(x, 'tbl_df')) x = as.data.frame(x)
   tab = xfun::md_table(x, ...)
   opt = reactor()
   tab = add_cap(tab, opt$tab.cap, opt$label, opt$cap.pos %||% 'top', opt$tab.env, 'tab')
@@ -38,15 +42,7 @@ record_print.data.frame = function(x, ...) {
 record_print.matrix = record_print.data.frame
 
 #' @export
-record_print.tbl_df = function(x, ...) {
-  x = as.data.frame(x)
-  if ('limit' %in% names(list(...))) {
-    record_print.data.frame(x, ...)
-  } else {
-    limit = getOption('xfun.md_table.limit', getOption('pillar.print_min', 10))
-    record_print.data.frame(x, ..., limit = limit)
-  }
-}
+record_print.tbl_df = record_print.data.frame
 
 #' @export
 record_print.knitr_kable = function(x, ...) {
@@ -66,11 +62,14 @@ record_print.knitr_kable = function(x, ...) {
 # weave or tangle?
 vig_fun = function(weave = TRUE) {
   function(file, quiet = FALSE, ...) {
+    empty_file = function() write_utf8(character(), with_ext(file, '.R'))
     # fuse() .Rmd and mark() .md
     if (grepl('[.]Rmd$', file)) {
-      if (weave) fuse(file, quiet = quiet, envir = globalenv()) else fiss(file)
-    } else if (weave) mark(file) else {
-      write_utf8(character(), with_ext(file, '.R'))
+      if (weave) fuse(file, quiet = quiet, envir = globalenv()) else {
+        if (getRversion() <= '3.2.5') empty_file() else fiss(file)
+      }
+    } else {
+      if (weave) mark(file) else empty_file()
     }
   }
 }
@@ -81,9 +80,9 @@ vig_filter = function(ifile, encoding) {
   res = lapply(res, function(x) {
     if (x$type == 'code_chunk') return(rep('', length(x$source)))
     if (is.character(x$source)) x$source else {
-      one_string(unlist(lapply(x$source, function(s) {
+      one_string(uapply(x$source, function(s) {
         if (is.character(s)) s else ''
-      })), '')
+      }), '')
     }
   })
   structure(split_lines(unlist(res)), control = '-H -t')

@@ -1,5 +1,7 @@
 .nav-path {
   font-size: .8em;
+  width: 100%;
+  order: -1;
 }
 .pencil, .save {
   text-decoration: none;
@@ -14,15 +16,15 @@ li .pencil {
 td .pencil {
   font-size: inherit;
 }
-span[data-line-number] {
+.auto-numbers span[data-line-number] {
   cursor: pointer;
 }
-.waiting {
+::backdrop {
   cursor: wait;
   opacity: .5;
 }
 @media print {
-  .nav-path {
+  .nav-path, .auto-numbers span[data-line-number] {
     display: none;
   }
 }

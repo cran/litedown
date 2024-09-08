@@ -27,6 +27,8 @@ dropNULL = function(x) x[!vapply(x, is.null, logical(1))]
 
 is_lang = function(x) is.symbol(x) || is.language(x)
 
+uapply = function(..., recursive = TRUE) unlist(lapply(...), recursive = recursive)
+
 #' Convert some ASCII strings to HTML entities
 #'
 #' Transform ASCII strings `(c)` (copyright), `(r)` (registered trademark),
@@ -89,13 +91,30 @@ id_string = function(text, lens = c(5:10, 20), times = 20) {
 }
 
 # a shorthand for gregexpr() and regmatches()
-match_replace = function(x, pattern, replace = identity, ...) {
-  m = gregexpr(pattern, x, ...)
+match_replace = function(x, r, replace = identity, ...) {
+  m = gregexpr(r, x, ...)
   regmatches(x, m) = lapply(regmatches(x, m), function(z) {
     if (length(z)) replace(z) else z
   })
   x
 }
+
+# gregexec() + regmatches() to greedy-match all substrings in regex groups
+match_all = function(x, r, ...) {
+  regmatches(x, base::gregexec(r, x, ...))
+}
+# for R < 4.1.0
+if (!exists('gregexec', baseenv(), inherits = TRUE)) match_all = function(x, r, ...) {
+  lapply(match_full(x, r, ...), function(z) {
+    if (length(z)) do.call(cbind, match_one(z, r, ...)) else z
+  })
+}
+
+# regexec() + regmatches() to match the regex once and capture substrings
+match_one = function(x, r, ...) regmatches(x, regexec(r, x, ...))
+
+# gregexpr() + regmatches() to match full strings but not substrings in regex groups
+match_full = function(x, r, ...) regmatches(x, gregexpr(r, x, ...))
 
 # if `text` is NULL and `input` is a file, read it; otherwise use the `text`
 # argument as input
@@ -274,7 +293,7 @@ set_highlight = function(meta, options, html) {
   autoloader = 'plugins/autoloader/prism-autoloader.min.js'
   o$js = c(o$js, if (!is.null(l <- o$languages)) get_lang(l) else {
     # detect <code> languages in html and load necessary language components
-    lang = unlist(regmatches(html, gregexpr(r, html)))
+    lang = unlist(match_full(html, r))
     lang = gsub(' .*', '', lang)  # only use the first class name
     lang = setdiff(lang, 'plain')  # exclude known non-existent names
     f = switch(p, highlight = js_libs[[c(p, 'js')]], prism = autoloader)
@@ -312,8 +331,7 @@ lang_files = function(package, path, langs) {
     x = grep(r, x, value = TRUE)
     l = gsub(r, '\\1', x)
     # then find their aliases
-    m = gregexpr('(?<=aliases:\\[)[^]]+(?=\\])', x)
-    a = lapply(regmatches(x, m), function(z) {
+    a = lapply(match_full(x, '(?<=aliases:\\[)[^]]+(?=\\])'), function(z) {
       z = unlist(strsplit(z, '[",]'))
       z[!xfun::is_blank(z)]
     })
@@ -322,16 +340,15 @@ lang_files = function(package, path, langs) {
     if (length(l) == 0) return()
     # check if language files exist on CDN
     d = paste0(dirname(u), '/languages/')
-    l1 = unlist(lapply(l, function(z) {
+    l1 = uapply(l, function(z) {
       if (downloadable(sprintf('%s%s.min.js', d, z))) z
-    }))
+    })
     l2 = setdiff(l, l1)
     if (length(l2)) warn(l1, l2, d)
     l1
   } else {
     # dependencies and aliases (the arrays should be more than 1000 characters)
-    m = gregexpr('(?<=\\{)([[:alnum:]_-]+:\\[?"[^}]{1000,})(?=\\})', x)
-    x = unlist(regmatches(x, m))
+    x = unlist(match_full(x, '(?<=\\{)([[:alnum:]_-]+:\\[?"[^}]{1000,})(?=\\})'))
     if (length(x) < 2) {
       warning(
         "Unable to process Prism's autoloader plugin (", u, ") to figure out ",
@@ -341,12 +358,11 @@ lang_files = function(package, path, langs) {
       return()
     }
     x = x[1:2]
-    m = gregexpr('([[:alnum:]_-]+):(\\["[^]]+\\]|"[^"]+")', x)
-    x = lapply(regmatches(x, m), function(z) {
+    x = lapply(match_full(x, '([[:alnum:]_-]+):(\\["[^]]+\\]|"[^"]+")'), function(z) {
       z = gsub('[]["]', '', z)
-      unlist(lapply(strsplit(z, '[:,]'), function(y) {
+      uapply(strsplit(z, '[:,]'), function(y) {
         set_names(list(y[-1]), y[1])
-      }), recursive = FALSE)
+      }, recursive = FALSE)
     })
     # x1 is dependencies; x2 is aliases
     x1 = x[[1]]; x2 = unlist(x[[2]])
@@ -359,14 +375,14 @@ lang_files = function(package, path, langs) {
       c(lapply(deps, resolve_deps), lang)
     }
     # all languages required for this page
-    l1 = unique(unlist(lapply(langs, resolve_deps)))
+    l1 = unique(uapply(langs, resolve_deps))
     # languages that are officially supported
     l2 = c(names(x1), unlist(x1), x2)
     # for unknown languages, check if they exist on CDN
     d = sub('/plugins/.+', '/components/', u)
-    l3 = unlist(lapply(setdiff(l1, l2), function(z) {
+    l3 = uapply(setdiff(l1, l2), function(z) {
       if (!downloadable(sprintf('%sprism-%s.min.js', d, z))) z
-    }))
+    })
     l4 = setdiff(l1, l3)
     if (length(l3)) warn(l4, l3, d)
     l4
@@ -403,18 +419,18 @@ add_citation = function(x, bib, format = 'html') {
     '(?<!\\{)(\\{\\[\\}@[-;@ [:alnum:]]+\\{\\]\\}|@[-[:alnum:]]+)'
   # [@key] for citep, and @key for citet
   x = match_replace(x, r, function(z) {
-    z2 = unlist(lapply(strsplit(z, '[;@ {}]+'), function(keys) {
+    z2 = uapply(strsplit(z, '[;@ {}]+'), function(keys) {
       bracket = any(grepl('^\\[', keys))
       if (bracket) keys = gsub('^\\[|\\]$', '', keys)
       keys = keys[keys != '']
       if (length(keys) == 0 || !all(keys %in% names(bib))) return(NA)
       if (is_html) {
         cited <<- c(cited, keys)
-        cite_html(keys, bib, !bracket)
+        cite_html(keys, bib, bracket)
       } else {
         sprintf('\\cite%s{%s}', if (bracket) 'p' else 't', one_string(keys, ','))
       }
-    }))
+    })
     ifelse(is.na(z2), z, z2)
   })
   if (is_html) x = one_string(c(x, '<div id="refs">', bib_html(bib, cited), '</div>'))
@@ -425,37 +441,35 @@ add_citation = function(x, bib, format = 'html') {
 author_name = function(x) paste(x$family %|% x$given, collapse = ' ')
 
 # mimic natbib's author-year citation style for HTML output
-cite_html = function(keys, bib, textual = FALSE) {
-  x = NULL
-  for (key in keys) {
-    b = bib[[key]]; a = b$author; n = length(a)
+cite_html = function(keys, bib, bracket = TRUE) {
+  x = NULL; N = length(keys)
+  for (i in seq_len(N)) {
+    key = keys[i]; b = bib[[key]]; a = b$author; n = length(a)
     z = paste0(c(
       author_name(a[[1]]),
       if (n == 2) c('<span class="ref-and"></span>', author_name(a[[2]])),
       if (n > 2) '<span class="ref-et-al"></span>', ' ',
-      if (textual) citep(cite_link(key, b$year)) else b$year
+      if (bracket) b$year else
+        c('<span class="ref-paren-open ref-paren-close">', b$year, '</span>')
     ), collapse = '')
-    if (!textual) z = cite_link(key, z)
+    cls = if (bracket) c(
+      if (i == 1) 'ref-paren-open', if (i == N) 'ref-paren-close',
+      if (i < N) 'ref-semicolon'
+    )
+    z = cite_link(key, z, one_string(c('', cls), ' '))
     x = c(x, z)
   }
-  x = paste0(
-    '<span class="citation">', x, '</span>', collapse = '<span class="ref-semicolon"></span>'
-  )
-  if (textual) x else citep(x)
+  one_string(x, '')
 }
 
-cite_link = function(key, text) {
-  sprintf('<a href="#ref-%s">%s</a>', key, text)
-}
-
-citep = function(x) {
-  paste0('<span class="ref-paren-open"></span>', x, '<span class="ref-paren-close"></span>')
+cite_link = function(key, text, class = '') {
+  sprintf('<a href="#ref-%s" class="citation%s">%s</a>', key, class, text)
 }
 
 # html bibliography
 bib_html = function(bib, keys) {
   bib = sort(bib[unique(keys)])
-  keys = unlist(lapply(bib, function(x) attr(unclass(x)[[1]], 'key')))
+  keys = uapply(bib, function(x) attr(unclass(x)[[1]], 'key'))
   res = format(bib, 'html')
   paste0('<p id="ref-', keys, '"', sub('^<p', '', res))
 }
@@ -482,7 +496,7 @@ build_toc = function(html, n = 3) {
   if (n <= 0) return()
   if (n > 6) n = 6
   r = sprintf('<(h[1-%d])( id="[^"]+")?[^>]*>(.+?)</\\1>', n)
-  items = unlist(regmatches(html, gregexpr(r, html)))
+  items = unlist(match_full(html, r))
   if (length(items) == 0) return()
   x = gsub(r, '<toc\\2>\\3</toc>', items)  # use a tag <toc> to protect heading text
   h = as.integer(gsub('^h', '', gsub(r, '\\1', items)))  # heading level
@@ -594,7 +608,7 @@ move_attrs = function(x, format = 'html') {
 }
 
 convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
-  r2 = '(?<=^| )[.#]([-[:alnum:]]+)(?= |$)'
+  r2 = '(?<=^| )[.#]([-[:alnum:]]+)(?= |$)'  # should we allow other chars in ID/class?
   match_replace(x, r, function(y) {
     if (format == 'html') {
       z = gsub('[\U201c\U201d]', '"', y)
@@ -680,8 +694,7 @@ unique_id = function(x, empty) {
 
 # number sections in HTML output
 number_sections = function(x) {
-  m = gregexpr('</h[1-6]>', x)
-  h = sub('</h([1-6])>', '\\1', unlist(regmatches(x, m)))
+  h = sub('</h([1-6])>', '\\1', unlist(match_full(x, '</h[1-6]>')))
   if (length(h) == 0) return(x)  # no headings
   h = min(as.integer(h))  # highest level of headings
   r = '<h([1-6])([^>]*)>(?!<span class="section-number)'
@@ -749,7 +762,7 @@ number_refs = function(x, r) {
 
   # first, find numbered section headings
   r2 = '<h[1-6][^>]*? id="((sec|chp)-[^"]+)"[^>]*><span class="section-number[^"]*">([0-9.]+)</span>'
-  m = regmatches(x, gregexec(r2, x))[[1]]
+  m = match_all(x, r2)[[1]]
   if (length(m)) {
     ids = m[2, ]
     db = as.list(set_names(m[4, ], ids))
@@ -794,7 +807,6 @@ add_ref = function(id, type, x = NULL) {
   c(sprintf('[](#@%s-%s)', type, id), x)
 }
 
-#' @importFrom utils URLdecode
 embed_resources = function(x, embed = 'local') {
   if (length(x) == 0) return(x)
   embed = c('https', 'local') %in% embed
@@ -904,6 +916,34 @@ jsdelivr = function(file, dir = 'npm/@xiee/utils/') {
   ifelse(is_https(file), file, sprintf('https://cdn.jsdelivr.net/%s%s', dir, file))
 }
 
+# get the latest version of jsdelivr assets
+jsd_version = local({
+  vers = list()  # cache versions in current session
+  function(pkg) {
+    if (is.character(v <- vers[[pkg]])) return(v)
+    x = tryCatch(
+      xfun::read_utf8(paste0('https://data.jsdelivr.com/v1/package/', pkg)),
+      error = function(e) ''
+    )
+    v = grep_sub('.*"latest":\\s*"([0-9.]+)".*', '@\\1', x)
+    vers[[pkg]] <<- if (length(v)) v[1] else ''
+  }
+})
+
+jsd_versions = function(pkgs) uapply(pkgs, jsd_version)
+
+# resolve the implicit latest version to current latest version
+jsd_resolve = function(x) {
+  rs = paste0(c(
+    '((?<=https://cdn.jsdelivr.net/combine/)|(?<=,))',
+    '(?<=https://cdn.jsdelivr.net/)(?!combine/)'
+  ), '([^/]+/(@[^/]+/)?[^/@]+)(?=/)')
+  for (r in rs) x = match_replace(x, r, function(z) {
+    paste0(z, jsd_versions(z))
+  })
+  x
+}
+
 # if both @foo and foo are present, remove foo
 resolve_dups = function(x) {
   x = unique(x)
@@ -958,6 +998,7 @@ resolve_files = function(x, ext = 'css') {
     paste0('combine/', paste(z, collapse = ','))
   })
   x[i] = jsdelivr(x[i], '')
+  x[i0] = jsd_resolve(x[i0])
 
   # built-in resources in this package
   i = dirname(x) == '.' & file_ext(x) == '' & !file_exists(x)
@@ -1032,7 +1073,7 @@ base64_url = function(url, code, ext) {
     if (length(p) == 1) code = match_replace(
       code, '(?<=src:\'url\\(")(%%URL%%/[^"]+)(?="\\))', function(u) {
         u = sub('%%URL%%', paste(d, p, sep = '/'), u, fixed = TRUE)
-        unlist(lapply(u, function(x) download_cache$get(x, 'base64')))
+        uapply(u, function(x) download_cache$get(x, 'base64'))
       }
     ) else warning(
       'Unable to determine the font path in MathJax. Please report an issue to ',
@@ -1041,16 +1082,16 @@ base64_url = function(url, code, ext) {
   }
   # find `attr: url(resource)` and embed url resources in CSS
   if (ext == 'css') {
-    r = '(: ?url\\("?)([^)]+)("?\\))'
+    r = '(: ?url\\(["\']?)([^"\')]+)(["\']?\\))'
     code = match_replace(code, r, function(z) {
       z1 = gsub(r, '\\1', z)
       z2 = gsub(r, '\\2', z)
       z3 = gsub(r, '\\3', z)
       i = !is_https(z2)
       z2[i] = paste(d, z2[i], sep = '/')
-      z2 = unlist(lapply(z2, function(x) {
+      z2 = uapply(z2, function(x) {
         if (is_https(x)) download_cache$get(x, 'base64') else base64_uri(x)
-      }))
+      })
       paste0(z1, z2, z3)
     })
   }

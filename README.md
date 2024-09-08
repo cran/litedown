@@ -8,6 +8,14 @@
 
 # R Markdown Reimagined
 
+<!-- badges: start -->
+
+[![R-CMD-check](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml)
+[![CRAN
+release](https://www.r-pkg.org/badges/version/litedown)](https://cran.r-project.org/package=litedown)
+
+<!-- badges: end -->
+
 This package provides a trimmed-down and reimagined implementation of [R
 Markdown](https://rmarkdown.rstudio.com). It is much more lightweight, at the
 price of dropping some features. It does not depend on the R package **knitr**
