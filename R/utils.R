@@ -25,6 +25,12 @@ set_names = function(x, nm) {
 
 dropNULL = function(x) x[!vapply(x, is.null, logical(1))]
 
+# remove the <p> tag from HTML
+sans_p = function(x) gsub('^<p[^>]*>|(</p>)?\n$', '', x)
+
+# remove ugly single quotes, e.g., 'LaTeX' -> LaTeX
+sans_sq = function(x) gsub("(^|\\W)'([^']+)'(\\W|$)", '\\1\\2\\3', x)
+
 is_lang = function(x) is.symbol(x) || is.language(x)
 
 uapply = function(..., recursive = TRUE) unlist(lapply(...), recursive = recursive)
@@ -134,7 +140,7 @@ is_file = function(x) {
 }
 
 is_output_file = function(x) {
-  is.character(x) && !(x %in% c(names(md_formats), 'markdown') || is_ext(x))
+  is.character(x) && !(x %in% names(md_formats) || is_ext(x))
 }
 
 is_ext = function(x) grepl('^[.]', x) && sans_ext(x) == ''
@@ -197,22 +203,11 @@ restore_html = function(x) {
   x
 }
 
-.requireMathJS = function(x) {
-  regs = c('\\\\\\(.+?\\\\\\)', '[$]{2}.+?[$]{2}', '\\\\\\[.+?\\\\\\]')
-  for (i in regs) if (any(grepl(i, x, perl = TRUE))) return(TRUE)
-  FALSE
-}
-
 # set js/css variables according to the js_math option
-set_math = function(meta, options, html) {
-  o = js_options(options[['js_math']], 'katex', .requireMathJS(html))
-  if (is.null(o)) return(meta)
-  if (is_katex <- o$package == 'katex')
-    o$js = c(o$js, 'dist/contrib/auto-render.min.js')
-  js = js_combine(
-    sprintf('npm/%s%s/%s', o$package, o$version, o$js),
-    if (is_katex) 'npm/@xiee/utils/js/render-katex.js'
-  )
+set_math = function(meta, o, is_katex) {
+  if (is_katex) o$js = c(o$js, 'dist/contrib/auto-render.min.js')
+  js = js_combine(sprintf('npm/%s%s/%s', o$package, o$version, o$js))
+  js = if (is_katex) c(js, '@render-katex') else c('@mathjax-config', js)
   css = sprintf('@npm/%s%s/%s', o$package, o$version, o$css)
   add_meta(meta, list(js = js, css = css))
 }
@@ -222,10 +217,10 @@ js_combine = function(...) {
   if (length(x <- c(...))) paste0('@', paste(x, collapse = ','))
 }
 
-js_options = function(x, default, test) {
+js_options = function(x, default) {
   d = js_default(x, default)
   x = if (is.list(x)) merge_list(d, x) else d
-  if (is.null(x) || !test) return()
+  if (length(x) == 0) return()
   if (x$version != '') x$version = sub('^@?', '@', x$version)
   x
 }
@@ -255,8 +250,8 @@ add_meta = function(x, v) {
 # set js/css variables according to the js_highlight option
 set_highlight = function(meta, options, html) {
   r = '(?<=<code class="language-)([^"]+)(?=")'
-  o = js_options(options[['js_highlight']], 'prism', any(grepl(r, html, perl = TRUE)))
-  if (is.null(o)) return(meta)
+  if (!any(grepl(r, html, perl = TRUE))) return(meta)
+  if (!length(o <- js_options(options[['js_highlight']], 'prism'))) return(meta)
 
   p = o$package
   # return jsdelivr subpaths
@@ -497,6 +492,8 @@ build_toc = function(html, n = 3) {
   if (n > 6) n = 6
   r = sprintf('<(h[1-%d])( id="[^"]+")?[^>]*>(.+?)</\\1>', n)
   items = unlist(match_full(html, r))
+  # ignore headings with class="unlisted"
+  items = items[!has_class(items, 'unlisted')]
   if (length(items) == 0) return()
   x = gsub(r, '<toc\\2>\\3</toc>', items)  # use a tag <toc> to protect heading text
   h = as.integer(gsub('^h', '', gsub(r, '\\1', items)))  # heading level
@@ -549,10 +546,11 @@ move_attrs = function(x, format = 'html') {
       paste0(z1, z3, z24)
     })
     # links
-    x = convert_attrs(x, '(<a[^>]+)(>.+?</a>)\\{([^}]+)\\}', '\\3', function(r, z, z3) {
-      z1 = sub(r, '\\1 ', z)
+    x = convert_attrs(x, '(<a[^>]+)(>.+?</a>)(\\{([^}]+)\\})?', '\\4', function(r, z, z3) {
+      z1 = sub(r, '\\1', z)
       z2 = sub(r, '\\2', z)
-      paste0(z1, z3, z2)
+      z3 = str_trim(z3)
+      paste0(z1, ifelse(z3 == '', '', ' '), z3, z2)
     })
     # fenced Div's
     x = convert_attrs(x, '<p>:::+ \\{(.*?)\\}</p>', '\\1', function(r, z, z1) {
@@ -608,7 +606,7 @@ move_attrs = function(x, format = 'html') {
 }
 
 convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
-  r2 = '(?<=^| )[.#]([-[:alnum:]]+)(?= |$)'  # should we allow other chars in ID/class?
+  r2 = '(?<=^| )[.#]([-:[:alnum:]]+)(?= |$)'  # should we allow other chars in ID/class?
   match_replace(x, r, function(y) {
     if (format == 'html') {
       z = gsub('[\U201c\U201d]', '"', y)
@@ -675,7 +673,8 @@ auto_identifier = function(x) {
     z2 = sub(r, '\\2', z)  # attrs
     z3 = sub(r, '\\3', z)  # content
     i = !grepl(' id="[^"]*"', z2)  # skip headings that already have IDs
-    id = unique_id(sprintf('sec-%s', xfun::alnum_id(z3[i])), 'section')
+    p = ifelse(z1 == 'h1', 'chp:', 'sec:')  # h1 is chapter; h2+ are sections
+    id = unique_id(paste0(p[i], alnum_id(z3[i])), 'section')
     z[i] = sprintf('<%s id="%s"%s>%s</%s>', z1[i], id, z2[i], z3[i], z1[i])
     z
   })
@@ -692,6 +691,11 @@ unique_id = function(x, empty) {
   x
 }
 
+# test if a class name exists in attributes
+has_class = function(x, class) {
+  grepl(sprintf(' class="([^"]+ )?%s( [^"]+)?"', class), x)
+}
+
 # number sections in HTML output
 number_sections = function(x) {
   h = sub('</h([1-6])>', '\\1', unlist(match_full(x, '</h[1-6]>')))
@@ -700,10 +704,6 @@ number_sections = function(x) {
   r = '<h([1-6])([^>]*)>(?!<span class="section-number)'
   n = rep(0, 6)  # counters for all levels of headings
   k0 = 6  # level of last unnumbered heading
-  # test if a class name exists in attributes
-  has_class = function(x, class) {
-    grepl(sprintf(' class="([^"]+ )?%s( [^"]+)?"', class), x)
-  }
   match_replace(x, r, function(z) {
     z1 = as.integer(sub(r, '\\1', z, perl = TRUE))
     z2 = sub(r, '\\2', z, perl = TRUE)
@@ -756,16 +756,16 @@ number_sections = function(x) {
 }
 
 # number elements such as headings and figures, etc and resolve cross-references
-number_refs = function(x, r) {
+number_refs = function(x, r, katex = TRUE) {
   if (length(x) == 0) return(x)
   db = list()  # element numbers
 
   # first, find numbered section headings
-  r2 = '<h[1-6][^>]*? id="((sec|chp)-[^"]+)"[^>]*><span class="section-number[^"]*">([0-9.]+)</span>'
+  r2 = '<h[1-6][^>]*? id="([^"]+)"[^>]*><span class="section-number[^"]*">([0-9.]+)</span>'
   m = match_all(x, r2)[[1]]
   if (length(m)) {
     ids = m[2, ]
-    db = as.list(set_names(m[4, ], ids))
+    db = as.list(set_names(m[3, ], ids))
   }
 
   # retrieve refs from all chapters for fuse_book()
@@ -775,8 +775,8 @@ number_refs = function(x, r) {
   r2 = sprintf('<a href="#@%s"> ?</a>', r)
   db2 = list()
   x = match_replace(x, r2, function(z) {
-    type = sub(r2, '\\1', z)
-    id = sub(r2, '\\1-\\2', z)
+    type = sub(r2, '\\2', z)
+    id = sub(r2, '\\1', z)
     ids = split(id, type)
     db2 <<- unlist(unname(lapply(ids, function(id) set_names(seq_along(id), id))))
     sprintf('<span class="ref-number-%s">%d</span>', type, db2[id])
@@ -791,26 +791,41 @@ number_refs = function(x, r) {
   # finally, resolve cross-references
   r2 = sprintf('<a href="#(%s)">@\\1</a>', r)
   match_replace(x, r2, function(z) {
-    type = sub(r2, '\\2', z)
-    id = sub(r2, '\\2-\\3', z)
+    type = sub(r2, '\\3', z)
+    id = sub(r2, '\\2', z)
+    # equation numbers will be resolved in JS later
+    i1 = grepl('^eq[-:]', id)
+    z[i1] = sprintf('\\ref{%s}', id[i1])
+    i2 = grepl('^eqn[-:]', id)
+    z[i2] = sprintf('\\eqref{%s}', sub('eqn', 'eq', id[i2]))
+    i3 = i1 | i2
+    # KaTeX requires references to be in math, e.g., \(\ref{ID}\)
+    if (katex) z[i3] = paste0('\\(', z[i3], '\\)')
     i = id %in% ids
+    # for backward compatibility, if fig-id is not found, also look for fig:id
+    if (any(i4 <- !i & !i3)) {
+      id2 = sub('-', ':', id)
+      j = i4 & (id2 %in% ids)
+      id[j] = id2[j]; i[j] = TRUE; i4[j] = FALSE
+    }
     if (any(i)) z[i] = sprintf(
       '<a class="cross-ref-%s" href="#%s">%s</a>', type[i], id[i], db[id[i]]
     )
-    if (any(!i)) warning('Reference key(s) not found: ', one_string(id[!i], ', '))
+    if (any(i4)) warning('Reference key(s) not found: ', one_string(id[i4], ', '))
     z
   })
 }
 
 # add a special anchor [](#@id) to text, to be used to resolved cross-references
 add_ref = function(id, type, x = NULL) {
-  c(sprintf('[](#@%s-%s)', type, id), x)
+  c(sprintf('[](#@%s:%s)', type, id), x)
 }
 
-embed_resources = function(x, embed = 'local') {
+embed_resources = function(x, options) {
   if (length(x) == 0) return(x)
-  embed = c('https', 'local') %in% embed
+  embed = c('https', 'local') %in% options[['embed_resources']]
   if (!any(embed)) return(x)
+  clean = isTRUE(options[['embed_cleanup']])
 
   r = '(<img[^>]* src="|<!--#[^>]*? style="background-image: url\\("?)([^"]+?)("|"?\\);)'
   x = match_replace(x, r, function(z) {
@@ -819,10 +834,13 @@ embed_resources = function(x, embed = 'local') {
     z3 = sub(r, '\\3', z)
     # skip images already base64 encoded
     for (i in grep('^data:.+;base64,.+', z2, invert = TRUE)) {
-      if (file_exists(f <- URLdecode(z2[i]))) {
+      if (is_https(f <- z2[i])) {
+        if (embed[1]) z2[i] = download_cache$get(f, 'base64')
+      } else if (file_exists(f <- URLdecode(f))) {
         z2[i] = base64_uri(f)
-      } else if (embed[1] && is_https(f)) {
-        z2[i] = download_cache$get(f, 'base64')
+        if (clean && normalize_path(f) %in% .env$plot_files) file.remove(f)
+      } else {
+        warning("File '", f, "' not found (hence cannot be embedded).")
       }
     }
     paste0(z1, z2, z3)
@@ -919,13 +937,13 @@ jsdelivr = function(file, dir = 'npm/@xiee/utils/') {
 # get the latest version of jsdelivr assets
 jsd_version = local({
   vers = list()  # cache versions in current session
-  function(pkg) {
-    if (is.character(v <- vers[[pkg]])) return(v)
+  function(pkg, force = FALSE) {
+    if (!force && is.character(v <- vers[[pkg]])) return(v)
     x = tryCatch(
-      xfun::read_utf8(paste0('https://data.jsdelivr.com/v1/package/', pkg)),
+      xfun::read_utf8(paste0('https://data.jsdelivr.com/v1/packages/', pkg, '/resolved')),
       error = function(e) ''
     )
-    v = grep_sub('.*"latest":\\s*"([0-9.]+)".*', '@\\1', x)
+    v = grep_sub('.*"version":\\s*"([0-9.]+)".*', '@\\1', x)
     vers[[pkg]] <<- if (length(v)) v[1] else ''
   }
 })

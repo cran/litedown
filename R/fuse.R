@@ -528,8 +528,12 @@ fiss = function(input, output = '.R', text = NULL) {
     )
     message('Quitting from ', get_loc(nms[k]))
   }
-  # suppress tidyverse progress bars
-  opt = options(rstudio.notebook.executing = TRUE)
+  # suppress tidyverse progress bars and use cairo for bitmap devices (for
+  # smaller plot files and possible parallel execution)
+  opt = options(
+    rstudio.notebook.executing = TRUE,
+    bitmapType = if (capabilities('cairo')) 'cairo' else .Options$bitmapType
+  )
   on.exit({ options(opt); on_error() }, add = TRUE)
 
   # the chunk option `order` determines the execution order of chunks
@@ -681,14 +685,19 @@ fuse_code = function(x, blocks) {
   if (is.null(alt)) alt = cap
   p1 = Filter(function(x) !is_plot(x), res)
   p2 = Filter(is_plot, res)
+  p3 = unlist(p2)  # vector of plot paths
   # get the relative path of the plot directory
-  fig.dir = if (length(p2)) tryCatch(
-    sub('^[.]/', '.', paste0(dirname(xfun::relative_path(p2[[1]][1], .env$wd.out)), '/')),
+  fig.dir = if (length(p3)) tryCatch(
+    sub('^[.]/', '.', paste0(dirname(xfun::relative_path(p3[1], .env$wd.out)), '/')),
     error = function(e) NULL
   )
 
+  # record plot paths so they can be cleaned up if option embed_cleanup = true;
+  # however, when cache = true, we shouldn't clean up plots since they won't be
+  # regenerated next time (then they won't be found)
+  if (!isTRUE(opts$cache)) .env$plot_files = c(.env$plot_files, p3)
   # recycle alt and attributes for all plots
-  pn = length(unlist(p2))
+  pn = length(p3)
   if (pn && is.null(alt)) {
     # reminder about missing alt text if this option is set to TRUE
     if (getOption('litedown.fig.alt', FALSE)) message(
@@ -699,8 +708,7 @@ fuse_code = function(x, blocks) {
   alt = rep(alt, length.out = pn)
   att = rep(att, length.out = pn)
   # if figure caption is provided, merge all plots in one env
-  if (pn && length(cap))
-    res = c(xfun:::merge_record(p1), list(new_plot(unlist(p2))))
+  if (pn && length(cap)) res = c(xfun:::merge_record(p1), list(new_plot(p3)))
   i = 0  # plot counter
 
   l1 = x$code_start  # starting line number of the whole code chunk
@@ -713,10 +721,10 @@ fuse_code = function(x, blocks) {
       x = one_string(x)
       if (opts$strip.white) x = str_trim(x)
     }
-    if (type %in% c('output', 'asis')) {
+    asis = if (type %in% c('output', 'asis')) {
       if (opts$results == 'hide') return()
-      if (any(c(opts$results, type) == 'asis')) return(x)
-    }
+      any(c(opts$results, type) == 'asis')
+    } else FALSE
     if (type == 'warning' && !isTRUE(opts$warning)) return()
     if (type == 'message' && !isTRUE(opts$message)) return()
     if (type == 'plot') {
@@ -725,21 +733,26 @@ fuse_code = function(x, blocks) {
         '![%s](<%s>)%s', alt[i2],
         if (is.null(fig.dir)) x else gsub('^.*/', fig.dir, x), att[i2]
       )
-      add_cap(img, cap, lab, opts$cap.pos %||% 'bottom', env)
+      add_cap(img, cap, lab, opts$cap.pos, env)
     } else {
       a = opts[[paste0('attr.', type)]]
       if (type == 'source') {
-        a = c(paste0('.', lang), a)  # use engine name as class name
+        # use engine name as class name; when `a` contains class names, prefix language-
+        if (!any(grepl('(^| )[.]', a))) a = c(paste0('.',  lang), a)
         # add line numbers
         if (is_roaming()) a = c(
           a, sprintf('.line-numbers .auto-numbers data-start="%d"', l1 + l2 - 1)
         )
       } else {
         if (type == 'message') x = sub('\n$', '', x)
-        x = split_lines(x)
-        x = paste0(opts$comment, x)  # comment out text output
+        if (!asis) {
+          x = split_lines(x)
+          x = paste0(opts$comment, x)  # comment out text output
+        }
       }
-      fenced_block(x, a, fence)
+      if (asis) {
+        if (is.null(a)) x else fenced_div(x, a)
+      } else fenced_block(x, a, fence)
     }
   })
   a = opts$attr.chunk
@@ -754,11 +767,13 @@ fuse_code = function(x, blocks) {
   out
 }
 
+# add caption to an element (e.g., figure/table)
 add_cap = function(x, cap, lab, pos, env, type = 'fig') {
-  if (length(cap) == 0) return(x)
+  if (length(cap) == 0 || length(lab) == 0) return(x)
   cap = fenced_div(add_ref(lab, type, cap), sprintf('.%s-caption', type))
+  pos = pos %||% 'bottom'
   x = if (pos == 'top') c(cap, '', x) else c(x, '', cap)
-  fenced_div(x, c(sub('^[.]?', '.', env), sprintf('#%s-%s', type, lab)))
+  fenced_div(x, c(sub('^[.]?', '.', env), sprintf('#%s:%s', type, lab)))
 }
 
 # if original chunk header contains multiple curly braces (e.g., ```{{lang}}),
@@ -795,7 +810,7 @@ exec_inline = function(x) {
 }
 
 fmt_inline = function(x) {
-  if (is.numeric(x) && length(x) == 1) sci_num(x) else as.character(x)
+  if (is.numeric(x) && length(x) == 1 && !inherits(x, 'AsIs')) sci_num(x) else as.character(x)
 }
 
 # change scientific notation to LaTeX math
@@ -899,6 +914,7 @@ reactor(
   wd = NULL
 )
 
+# the R engine
 eng_r = function(x, inline = FALSE, ...) {
   opts = reactor()
   if (inline) {
@@ -929,6 +945,26 @@ eng_r = function(x, inline = FALSE, ...) {
   do.call(xfun::record, c(list(code = x$source, envir = fuse_env()), args))
 }
 
+# the Markdown engine: echo Markdown source verbatim, and also output it as-is
+eng_md = function(x, inline = FALSE, ...) {
+  s = x$source
+  if (inline) {
+    f = unlist(match_all(s, '`+'))  # how many backticks to quote the text?
+    f = if (length(f)) paste0('`', max(f)) else '`'
+    one_string(c(f, s, f, s), ' ')
+  } else list(new_source(s), new_asis(s))
+}
+
+# the Mermaid engine: put code in ```mermaid and add caption if necessary
+eng_mermaid = function(x, inline = FALSE, ...) {
+  code = fenced_block(src <- x$source, 'mermaid')
+  opts = reactor()
+  code = add_cap(code, opts$fig.cap, opts$label, opts$cap.pos, opts$fig.env)
+  if (inline) one_string(c(code, '')) else {
+    list(new_source(src), new_asis(code))
+  }
+}
+
 #' Language engines
 #'
 #' Get or set language engines for evaluating code chunks and inline code.
@@ -952,7 +988,7 @@ eng_r = function(x, inline = FALSE, ...) {
 #' litedown::engines()  # built-in engines
 engines = new_opts()
 engines(
-  r = eng_r,
+  r = eng_r, md = eng_md, mermaid = eng_mermaid,
   css = function(x, ...) eng_html(x, '<style type="text/css">', '</style>', ...),
   js = function(x, ...) eng_html(x, '<script>', '</script>', ...)
 )

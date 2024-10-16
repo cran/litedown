@@ -3,11 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-<meta name="generator" content="litedown 0.2">
+<meta name="generator" content="litedown 0.3">
 <title>Raw Output from Markdown Examples</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xiee/utils@1.13.30/css/prism-xcode.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xiee/utils@1.13.30/css/default.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xiee/utils@1.13.42/css/prism-xcode.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xiee/utils@1.13.42/css/default.min.css">
 </head>
 <body>
 <div class="frontmatter">
@@ -22,25 +21,25 @@ mkd &lt;- c(&quot;# Header 1&quot;, &quot;p1&quot;, &quot;## Header 2&quot;, &qu
 
 mark(mkd, options = &quot;+number_sections&quot;)
 </code></pre>
-<pre><code>&lt;h1 id=&quot;sec-header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/h1&gt;
+<pre><code>&lt;h1 id=&quot;chp:header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/h1&gt;
 &lt;p&gt;p1&lt;/p&gt;
-&lt;h2 id=&quot;sec-header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/h2&gt;
+&lt;h2 id=&quot;sec:header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/h2&gt;
 &lt;p&gt;p2&lt;/p&gt;
 </code></pre>
 <pre><code class="language-r">mark(mkd, options = &quot;+number_sections+toc&quot;)
 </code></pre>
 <pre><code>&lt;div id=&quot;TOC&quot;&gt;
 &lt;ul class=&quot;numbered&quot;&gt;
-&lt;li&gt;&lt;a href=&quot;#sec-header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/a&gt;
+&lt;li&gt;&lt;a href=&quot;#chp:header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/a&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;a href=&quot;#sec-header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;#sec:header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;/div&gt;
-&lt;h1 id=&quot;sec-header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/h1&gt;
+&lt;h1 id=&quot;chp:header-1&quot;&gt;&lt;span class=&quot;section-number main-number&quot;&gt;1&lt;/span&gt; Header 1&lt;/h1&gt;
 &lt;p&gt;p1&lt;/p&gt;
-&lt;h2 id=&quot;sec-header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/h2&gt;
+&lt;h2 id=&quot;sec:header-2&quot;&gt;&lt;span class=&quot;section-number&quot;&gt;1.1&lt;/span&gt; Header 2&lt;/h2&gt;
 &lt;p&gt;p2&lt;/p&gt;
 </code></pre>
 <pre><code class="language-r"># hard_wrap example
@@ -68,7 +67,10 @@ mark(mkd)
 <pre><code>&lt;p&gt;&lt;code&gt;$x$&lt;/code&gt; is inline math \(x\)!&lt;/p&gt;
 &lt;p&gt;Display style:&lt;/p&gt;
 &lt;p&gt;$$x + y$$&lt;/p&gt;
-&lt;p&gt;\begin{align} a^{2}+b^{2} &amp;amp; = c^{2}\\ \sin^{2}(x)+\cos^{2}(x) &amp;amp; = 1 \end{align}&lt;/p&gt;
+&lt;p&gt;\begin{align}
+a^{2}+b^{2} &amp;amp; = c^{2}\\
+\sin^{2}(x)+\cos^{2}(x) &amp;amp; = 1
+\end{align}&lt;/p&gt;
 </code></pre>
 <pre><code class="language-r">mark(mkd, options = &quot;-latex_math&quot;)
 </code></pre>
@@ -237,6 +239,5 @@ mark(mkd)
 </div>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/combine/npm/katex@0.16.11/dist/katex.min.js,npm/katex@0.16.11/dist/contrib/auto-render.min.js,npm/@xiee/utils@1.13.30/js/render-katex.js" defer></script>
 </body>
 </html>

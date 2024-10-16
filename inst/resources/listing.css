@@ -13,12 +13,18 @@ h1 {
   width: 30em;
   flex-grow: 1;
   margin: .5em;
+  .run {
+    float: right;
+  }
 }
 pre > code:not([class]) {
   border: none;
   padding: 0 1em 1em;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+pre:hover {
+  white-space: pre;
 }
 ul {
   width: 100%;

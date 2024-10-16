@@ -36,8 +36,9 @@
 #' @param meta A named list of metadata. Elements in the metadata will be used
 #'   to fill out the template by their names and values, e.g., `list(title =
 #'   ...)` will replace the `$title$` variable in the template. See the Section
-#'   \dQuote{YAML metadata} in the vignette `vignette('intro', package =
-#'   'litedown')` for supported variables.
+#'   \dQuote{YAML metadata} [in the
+#'   documentation](https://yihui.org/litedown/#sec:yaml-metadata) for supported
+#'   variables.
 #' @return The output file path if output is written to a file, otherwise a
 #'   character vector of the rendered output (wrapped in [xfun::raw_string()]
 #'   for clearer printing).
@@ -62,7 +63,9 @@
 #' mark('Hello _**`World`**_!', 'text')
 mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()) {
   text = read_input(input, text); input = attr(text, 'input')
-  part = yaml_body(text); yaml = part$yaml; text = part$body
+  part = yaml_body(text)
+  yaml = part$yaml; yaml2 = yaml_text(part, text)  # unparsed YAML
+  text = part$body
 
   full = is_output_full(output)
   format = detect_format(output, yaml)
@@ -92,9 +95,12 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     names(Filter(isTRUE, options)), commonmark::list_extensions()
   )
 
-  # determine the template: first check the `template` value in the output
-  # format litedown::(html|latex)_format in YAML
-  template = yaml_field(yaml, format, 'template')
+  # whether to write YAML metadata to output
+  keep_yaml = isTRUE(options[['keep_yaml']])
+
+  # if keep_yaml, generate a fragment only, otherwise check the `template` value
+  # in the output format litedown::(html|latex)_format in YAML
+  template = if (keep_yaml) FALSE else yaml_field(yaml, format, 'template')
   # if not set there, check global option; if not set, disable template if no
   # YAML was provided (i.e., generate a fragment)
   if (is.null(template))
@@ -107,8 +113,8 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   render = function(x, clean = FALSE) {
     if (length(x) == 0) return(x)
     res = do.call(render_fun, c(list(text = x), render_args))
-    if (clean) res = I(gsub('^<p[^>]*>|(</p>)?\n$', '', res))
-    res
+    if (clean) res = sans_p(res)
+    I(res)
   }
 
   if (isTRUE(options[['smartypants']])) text = smartypants(text)
@@ -123,17 +129,17 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   if (has_math <- test_feature('latex_math', '[$]')) {
     id = id_string(text); maths = NULL
     text = xfun::protect_math(text, id)
-    # temporarily replace math expressions with tokens and restore them later;
-    # no need to do this for html output because we need special HTML characters
-    # like &<> in math expressions to be converted to entities, but shouldn't
-    # convert them for latex output
-    if (format == 'latex') {
+    if (has_math <- any(grepl(paste0('`', id), text, fixed = TRUE))) {
+      # temporarily replace math expressions with tokens so render() won't seem
+      # them (to avoid issues like #33) and restore them later
       text = one_string(text)
-      text = match_replace(text, sprintf('`%s.{3,}?%s`', id, id), function(x) {
+      text = match_replace(text, sprintf('`%s(?s).{3,}?%s`', id, id), function(x) {
+        n0 = length(maths)
         maths <<- c(maths, gsub(sprintf('`%s|%s`', id, id), '', x))
         # replace math with !id-n-id! where n is the index of the math
-        sprintf('!%s-%d-%s!', id, length(maths) + seq_along(x), id)
+        sprintf('!%s-%d-%s!', id, n0 + seq_along(x), id)
       })
+      if (format == 'html') maths = xfun::html_escape(maths)
       text = split_lines(text)
     }
   }
@@ -162,6 +168,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       sprintf('!%s!', x)
     })
   }
+  # TODO: remove this after commonmark > 1.9.2 is on CRAN
   # disallow single tilde for <del> (I think it is an awful idea in GFM's
   # strikethrough extension to allow both single and double tilde for <del>)
   find_prose()
@@ -196,7 +203,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
 
   # turn @ref into [@ref](#ref) and resolve cross-references later in JS; for
   # latex output, turn @ref to \ref{}
-  r_ref = '([a-z]+)-([-_[:alnum:]]+)'  # must start with letters followed by -
+  r_ref = '(([a-z]+)[-:][-_[:alnum:]]+)'  # must start with letters followed by - or :
   r5 = paste0('(^|(?<=\\s|\\())@', r_ref, '(?!\\])')
   if (test_feature('cross_refs', r5)) {
     text[p] = match_replace(text[p], r5, function(x) {
@@ -207,15 +214,21 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   ret = render(text)
   ret = move_attrs(ret, format)  # apply attributes of the form {attr="value"}
 
+  if (has_math) ret = match_replace(ret, sprintf('!%s-\\d+-%s!', id, id), function(x) {
+    if (length(maths) != length(x)) warning(
+      'LaTeX math expressions cannot be restored correctly (expected ',
+      length(maths), ' expression(s) but found ', length(x), ' in the output).'
+    )
+    maths
+  })
+
   if (format == 'html') {
     # don't disable check boxes
     ret = gsub('(<li><input type="checkbox" [^>]*?)disabled="" (/>)', '\\1\\2', ret)
-    if (has_math) {
-      ret = gsub(sprintf('<code>%s(.{5,}?)%s</code>', id, id), '\\1', ret)
-      # `\(math\)` may fail to render to <code>\(math\)</code> when backticks
-      # are inside HTML tags, e.g., commonmark::markdown_html('<p>`a`</p>')
-      ret = gsub(sprintf('`%s\\\\\\((.+?)\\\\\\)%s`', id, id), '$\\1$', ret)
-    }
+    # replace <a> with <span> if href is empty but other attrs exist, so we have
+    # a way to create SPANs with attributes, e.g., [text](){.foo} -> <span
+    # class="foo"></span>
+    ret = gsub('<a href="" ([^>]+>[^<]*</)a>', '<span \\1span>', ret)
     if (has_sup)
       ret = gsub(sprintf('!%s(.+?)%s!', id2, id2), '<sup>\\1</sup>', ret)
     if (has_sub)
@@ -230,11 +243,23 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       # possible math environments
       i2 = (lang %in% c('tex', 'latex')) &
         grepl('^\\\\begin\\{[a-zA-Z*]+\\}.+\\\\end\\{[a-zA-Z*]+\\}\n$', code)
-      x[i2] = sprintf('<p>\n%s</p>\n', code[i2])
+      if (any(i2)) {
+        x[i2] = sprintf('<p>\n%s</p>\n', code[i2])
+        has_math <<- TRUE
+      }
       # discard other types of raw content blocks
       x[!(i1 | i2)] = ''
       x
     }, perl = FALSE)  # for perl = TRUE, we'd need (?s) before (.+?)
+    # support mermaid
+    r_mmd = '<pre><code class="language-mermaid">(.*?)</code></pre>'
+    if (length(grep(r_mmd, ret))) {
+      ret = gsub(r_mmd, '<pre class="mermaid">\\1</pre>', ret)
+      # add the js asset automatically if not detected
+      if (length(grep('mermaid', meta[['js']])) == 0) meta = add_meta(
+        meta, c(js = '@npm/mermaid/dist/mermaid.min.js')
+      )
+    }
     r4 = '(<pre><code class="language-)\\{([^"]+)}">'
     # deal with ```{.class1 .class2 attrs}, which is not supported by commonmark
     ret = convert_attrs(ret, r4, '\\2', function(r, z, z2) {
@@ -258,20 +283,18 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     if (isTRUE(options[['number_sections']])) ret = number_sections(ret)
     # build table of contents
     ret = add_toc(ret, options)
+    # add js/css for math
+    if (!has_math) has_math = length(ret) &&
+      grepl('$$</p>', ret, fixed = TRUE)  # math may be from pkg_manual()'s HTML
+    is_katex = TRUE
+    if (has_math && length(js_math <- js_options(options[['js_math']], 'katex'))) {
+      is_katex = js_math$package == 'katex'
+      meta = set_math(meta, js_math, is_katex)
+    }
     # number figures and tables, etc.
-    ret = number_refs(ret, r_ref)
+    ret = number_refs(ret, r_ref, is_katex)
   } else if (format == 'latex') {
     ret = render_footnotes(ret)  # render [^n] footnotes
-    if (has_math) {
-      m = gregexpr(sprintf('!%s-(\\d+)-%s!', id, id), ret)
-      regmatches(ret, m) = lapply(regmatches(ret, m), function(x) {
-        if (length(maths) != length(x)) warning(
-          'LaTeX math expressions cannot be restored correctly (expected ',
-          length(maths), ' expressions but found ', length(x), ' in the output).'
-        )
-        maths
-      })
-    }
     if (has_sup)
       ret = gsub(sprintf('!%s(.+?)%s!', id2, id2), '\\\\textsuperscript{\\1}', ret)
     if (has_sub)
@@ -309,19 +332,23 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
 
   meta$body = ret
   # convert some meta variables in case they use Markdown syntax
-  for (i in top_meta) if (length(meta[[i]])) {
-    meta[[i]] = render(meta[[i]], clean = i != 'abstract')
+  for (i in top_meta) if (meta_len <- length(meta[[i]])) {
+    # if author is of length > 1, render them individually
+    m_author = i == 'author' && meta_len > 1
+    meta[[i]] = if (m_author) uapply(meta[[i]], render) else {
+      render(meta[[i]], clean = i != 'abstract')
+    }
     # also provide *_ version of top-level meta variables, containing tags/commands
-    meta[[paste0(i, '_')]] = if (format == 'html') {
+    meta[[paste0(i, '_')]] = I(if (format == 'html') {
       tag = tag_meta[i]
       sprintf(
-        '<div class="%s">%s</div>', i, if (tag == '') meta[[i]] else sprintf(
-          '<%s>%s</%s>', tag, meta[[i]], tag
-        )
+        '<div class="%s">%s</div>', i, if (tag == '') meta[[i]] else {
+          one_string(sprintf('<%s>%s</%s>', tag, meta[[i]], tag))
+        }
       )
     } else if (format == 'latex') {
-      sprintf(cmd_meta[i], meta[[i]])
-    }
+      sprintf(cmd_meta[i], if (m_author) one_string(meta[[i]], ' \\and ') else meta[[i]])
+    })
   }
   # use the template (if provided) to create a standalone document
   if (format %in% c('html', 'latex') && is.character(template)) {
@@ -331,13 +358,15 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   }
 
   if (format == 'html') {
-    ret = in_dir(out_dir, embed_resources(ret, options[['embed_resources']]))
+    ret = in_dir(out_dir, embed_resources(ret, options))
     ret = clean_html(ret)
   } else if (format == 'latex') {
     # remove \maketitle if \title is absent
     if (!grepl('\n\\title{', ret, fixed = TRUE))
       ret = gsub('\n\\maketitle\n', '\n', ret, fixed = TRUE)
   }
+
+  if (keep_yaml) ret = one_string(c(yaml2, '', ret))
 
   ret = sub('\n$', '', ret)
   if (is_output_file(output)) {
@@ -375,8 +404,7 @@ build_output = function(format, options, template, meta) {
       if (!name %in% names(meta)) meta[[name]] <<- value
     }
     set_meta('css', 'default')
-    set_meta('plain-title', str_trim(commonmark::markdown_text(meta[['title']])))
-    meta = set_math(meta, options, b)
+    set_meta('plain-title', I(str_trim(commonmark::markdown_text(meta[['title']]))))
     meta = set_highlight(meta, options, b)
     # if the class .line-numbers is present, add js/css for line numbers
     if (any(grepl('<code class="[^"]*line-numbers', b))) for (i in c('css', 'js')) {
@@ -406,14 +434,16 @@ names(tag_meta) = top_meta
 cmd_meta = c(sprintf('\\%s{%%s}', top_meta[-5]), '\\begin{abstract}%s\\end{abstract}')
 names(cmd_meta) = top_meta
 
+yaml_text = function(part, text) if (length(l <- part$lines) == 2) text[l[1]:l[2]]
+
 #' Markdown rendering options
 #'
 #' A list of all options to control Markdown rendering. Options that are enabled
 #' by default are marked by a `+` prefix, and those disabled by default are
 #' marked by `-`.
 #'
-#' See `vignette('intro', package = 'litedown')` for the full list of options
-#' and their documentation.
+#' See <https://yihui.org/litedown/#sec:markdown-options> for the full list of
+#' options and their documentation.
 #' @return A character vector of all available options.
 #' @export
 #' @examples
@@ -424,7 +454,7 @@ names(cmd_meta) = top_meta
 markdown_options = function() {
   # options enabled by default
   x1 = c(
-    'smart', 'embed_resources', 'js_math', 'js_highlight',
+    'smart', 'embed_resources', 'embed_cleanup', 'js_math', 'js_highlight',
     'superscript', 'subscript', 'latex_math', 'auto_identifiers', 'cross_refs',
     setdiff(commonmark::list_extensions(), 'tagfilter')
   )
