@@ -120,10 +120,17 @@ vig_filter = function(ifile, encoding) {
 #' litedown::pkg_citation()
 #' litedown::pkg_manual()
 pkg_desc = function(name = detect_pkg()) {
-  d = packageDescription(name, fields = c(
+  fields = c(
     'Title', 'Version', 'Description', 'Depends', 'Imports', 'Suggests',
     'License', 'URL', 'BugReports', 'VignetteBuilder', 'Authors@R', 'Author'
-  ))
+  )
+  # read the DESCRIPTION file if pkg root is found, otherwise use installed info
+  d = if (is.character(p <- attr(name, 'path'))) {
+    as.list(read.dcf(file.path(p, 'DESCRIPTION'))[1, ][fields])
+  } else {
+    packageDescription(name, fields = fields)
+  }
+  names(d) = fields
   # remove single quotes on words (which are unnecessary IMO)
   for (i in c('Title', 'Description')) d[[i]] = sans_sq(d[[i]])
   # format authors
@@ -218,9 +225,7 @@ pkg_code = function(
     if (length(fs) == 0) return()
     x = uapply(fs, function(f) c(
       sprintf('##%s `%s`%s', if (flat) '' else '#', f, a), '',
-      fenced_block(read_utf8(f), c(
-        paste0('.', tolower(file_ext(f))), '.line-numbers', 'data-start="1"'
-      )), ''
+      fenced_block(read_utf8(f), lineno_attr(file_ext(f), auto = FALSE)), ''
     ))
     e = unique(file_ext(fs))
     c(if (!flat) paste0('## ', paste0('`*.', e, '`', collapse = ' / '), a), '', x)
@@ -317,16 +322,30 @@ pkg_manual = function(name = detect_pkg(), toc = TRUE, number_sections = TRUE) {
 }
 
 detect_pkg = function(error = TRUE) {
-  # when running R CMD check, DESCRIPTION won't be under working directory but 00_pkg_src
-  for (d in c(head(list.files('00_pkg_src', full.names = TRUE), 1), './')) {
+  ds = if (xfun::is_R_CMD_check()) {
+    # R CMD check's working directory is PKG_NAME.Rcheck by default
+    name = grep_sub('[.]Rcheck$', '', basename(getwd()))
+    # when running R CMD check, DESCRIPTION won't be under working directory but
+    # ../PKG_NAME/ (on CRAN's *nix) or ./00_pkg_src/
+    c(file.path('..', name), if (dir.exists('00_pkg_src'))
+      dirname(list.files('.', '^DESCRIPTION$', recursive = TRUE)))
+  } else name = NULL
+  for (d in c(ds, './')) {
     if (!is.null(root <- xfun::proj_root(d, head(xfun::root_rules, 1)))) break
   }
-  if (is.null(root)) if (error) stop(
-    "Cannot automatically detect the package root directory from '", getwd(), "'. ",
-    "You must provide the package name explicitly."
-  ) else return()
-  desc = read_utf8(file.path(root, 'DESCRIPTION'))
-  name = grep_sub('^Package: (.+?)\\s*$', '\\1', desc)[1]
+  if (is.null(root)) {
+    root = if (length(name)) system.file(package = name)
+    if (identical(root, '')) root = NULL
+  }
+  if (is.null(root)) {
+    if (error) stop(
+      "Cannot automatically detect the package root directory from '", getwd(), "'. ",
+      "You must provide the package name explicitly."
+    ) else return()
+  } else if (is.null(name)) {
+    desc = read_utf8(file.path(root, 'DESCRIPTION'))
+    name = grep_sub('^Package: (.+?)\\s*$', '\\1', desc)[1]
+  }
   structure(name, path = root)
 }
 

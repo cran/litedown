@@ -442,9 +442,7 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   set_path = function(name) {
     # fig.path = output__files/ if `output` is a path, otherwise use
     # litedown__files/ (we don't use _files because of rstudio/rmarkdown#2550)
-    if (is.null(p <- opts[[name]])) p = paste0(
-      output_base %||% 'litedown', c(fig.path = '__files/', cache.path = '__cache/')[name]
-    )
+    if (is.null(p <- opts[[name]])) p = aux_path(output_base %||% 'litedown', name)
     slash = endsWith(p, '/')
     # make sure path is absolute so it will be immune to setwd() (in code chunks)
     if (xfun::is_rel_path(p)) {
@@ -468,6 +466,12 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   }
   fuse_output(input, output, res, full)
 }
+
+# default fig/cache path
+aux_path = function(base = sans_ext(file), type, file) {
+  paste0(base, c(fig.path = '__files/', cache.path = '__cache/')[type])
+}
+fig_path = function(path) aux_path(, 'fig.path', path)
 
 # if output = '.md' or 'markdown', no need for further mark() conversion
 fuse_output = function(input, output, res, full = NULL) {
@@ -520,20 +524,12 @@ fiss = function(input, output = '.R', text = NULL) {
   on_error = function() {
     if (k == n) return()  # blocks have been successfully fused
     p_bar(p_clr)
-    # should we check if ANSI links are actually supported? e.g., via
-    # Sys.getenv('RSTUDIO_CLI_HYPERLINKS')
-    if (length(input)) .env$input = sprintf(
-      "\033]8;%s;file://%s\a%s\033]8;;\a", link_pos(),
-      normalize_path(input), input
-    )
+    ansi_link(input)
     message('Quitting from ', get_loc(nms[k]))
   }
   # suppress tidyverse progress bars and use cairo for bitmap devices (for
   # smaller plot files and possible parallel execution)
-  opt = options(
-    rstudio.notebook.executing = TRUE,
-    bitmapType = if (capabilities('cairo')) 'cairo' else .Options$bitmapType
-  )
+  opt = options(rstudio.notebook.executing = TRUE, bitmapType = bitmap_type())
   on.exit({ options(opt); on_error() }, add = TRUE)
 
   # the chunk option `order` determines the execution order of chunks
@@ -554,6 +550,21 @@ fiss = function(input, output = '.R', text = NULL) {
   }
   k = n
   res
+}
+
+# add ANSI link on input path if supported
+ansi_link = function(x) {
+  if (length(x) && isTRUE(as.logical(Sys.getenv('RSTUDIO_CLI_HYPERLINKS'))))
+    .env$input = sprintf(
+      '\033]8;%s;file://%s\a%s\033]8;;\a', link_pos(), normalize_path(x), x
+    )
+}
+
+# use options(bitmapType = 'cairo') for bitmap devices on macOS if possible
+bitmap_type = function() {
+  # xquartz has to be installed for cairo to work (I don't know why)
+  if (xfun::is_macos() && capabilities('cairo') && Sys.which('xquartz') != '')
+    'cairo' else .Options$bitmapType
 }
 
 time_frame = function(s = NA_character_, l = integer(), lab = NA_character_, t = NA_real_) {
@@ -740,9 +751,7 @@ fuse_code = function(x, blocks) {
         # use engine name as class name; when `a` contains class names, prefix language-
         if (!any(grepl('(^| )[.]', a))) a = c(paste0('.',  lang), a)
         # add line numbers
-        if (is_roaming()) a = c(
-          a, sprintf('.line-numbers .auto-numbers data-start="%d"', l1 + l2 - 1)
-        )
+        if (is_roaming()) a = c(a, lineno_attr(NA, l1 + l2 - 1))
       } else {
         if (type == 'message') x = sub('\n$', '', x)
         if (!asis) {
@@ -763,7 +772,7 @@ fuse_code = function(x, blocks) {
   }
   out = unlist(out)
   if (!is.null(a)) out = fenced_div(out, a)
-  if (!is.null(x$prefix)) out = paste0(x$prefix, out)
+  if (!is.null(x$prefix)) out = gsub('^|(?<=\n)', x$prefix, out, perl = TRUE)
   out
 }
 
@@ -782,6 +791,12 @@ add_fences = function(out, x, fence) {
   fences = list(c(x$fences[1], x$comments), x$fences[2])
   append(lapply(fences, fenced_block, c('.md', '.code-fence'), fence), out, 1)
 }
+
+# attributes for code blocks with line numbers
+lineno_attr = function(lang = NA, start = 1, auto = TRUE) c(
+  if (!is.na(lang)) paste0('.', sub('^[rq]md$', 'md', tolower(lang))),
+  '.line-numbers', if (auto) '.auto-numbers', sprintf('data-start="%d"', start)
+)
 
 new_source = function(x) xfun::new_record(x, 'source')
 new_warning = function(x) xfun::new_record(x, 'warning')

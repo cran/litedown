@@ -113,7 +113,7 @@ nav_menu = function(info) {
   x = gsub('[-_]', ' ', sans_ext(ifelse(is_index(b), 'home', b)))
   sprintf(
     '[%s](/%s)', tools::toTitleCase(x),
-    if (is_roaming()) paste0(b, '?preview=1') else with_ext(b, '.html')
+    if (is_roaming()) paste0(b, '?preview=2') else with_ext(b, '.html')
   )
 }
 
@@ -199,6 +199,7 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
     }
   }
   if (length(input) == 0) stop('No input was provided or found.')
+  input = sub('^[.]/+', '', input)  # clean up the leading ./ in paths
 
   full = is_output_full(output)
   format = detect_format(output, yaml)

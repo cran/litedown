@@ -84,6 +84,25 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
         ))
       })
     }
+    # clean up __files/
+    if (type == 'cleanup') {
+      if (dir.exists(fig <- fig_path(path)) &&
+          !is.null(fig_time <- .env$roam_files[[fig]]) &&
+          !dir.exists(aux_path(, 'cache.path', path))) {
+        fig_time2 = file.mtime(fig)
+        # remove fig dir if it has not been modified since its mtime was
+        # recorded last time (in file_resp()); if it has, update to new mtime so
+        # we can clean it up next time when we receive the request; checking
+        # mtime is necessary because the Ajax cleanup request (sent from the
+        # 'beforeunload' event) may arrive _after_ file_resp() rebuilds the
+        # current page when the page is refreshed, which may be counterintuitive
+        # but Ajax is _asynchronous_ anyway (this took me hours to figure out)
+        .env$roam_files[[fig]] = if (fig_time2 <= fig_time) {
+          unlink(fig, recursive = TRUE); NULL
+        } else fig_time2
+      }
+      return(list(payload = ''))
+    }
     # TODO: should we implement Hugo's --navigateToChanged?
     if (live && type != '') {
       resp = ''
@@ -122,10 +141,10 @@ dir_page = function(dir = '.') {
   # index.* files should appear first
   files = files[order(!sans_ext(basename(files)) == 'index')]
   # show file size and mtime
-  info = function(f, b) {
+  info = function(f, b, extra = '') {
     sprintf(
-      '_( [%s](<%s>) %s%s)_', file_size(f), b, file_time(f),
-      if (is_text_file(file = f)) btn('.open', b) else ''
+      '_( [%s](<%s>){title="Raw file"} %s%s%s)_', file_size(f), b, file_time(f),
+      if (is_text_file(file = f)) btn('.open', b) else '', extra
     )
   }
   # create link to preview a file
@@ -138,7 +157,8 @@ dir_page = function(dir = '.') {
     b = basename(f)
     fenced_div(c(
       fenced_div(c(
-        p_link(b, a = NULL), info(f, b), p_link(b, '.run', 2, 'title="Run"')
+        p_link(b, a = NULL), info(f, b, btn('.save', b)),
+        p_link(b, '.run', 2, 'title="Run in memory"')
       ), '.name'),
       xfun::fenced_block(readLines(f, n = 10, encoding = 'UTF-8', warn = FALSE))
     ), '.box')
@@ -177,6 +197,14 @@ file_resp = function(x, preview) {
   raw = preview == '0'  # 0: send raw response; 1: render verbatim; 2: fuse()/mark()
   ext = if (raw) '' else tolower(xfun::file_ext(x))
   if (preview == '2' && is_lite_ext(ext)) {
+    # to clean up the __files/ dir if requested (via options()) and the dir
+    # didn't exist before
+    if (getOption('litedown.roam.cleanup', FALSE)) {
+      fig = fig_path(x)
+      if (!dir.exists(fig)) on.exit({
+        if (dir.exists(fig)) .env$roam_files[[fig]] = file.mtime(fig)
+      })
+    }
     # check if the file is for a book or site
     info = proj_info(x)
     list(payload = switch(
@@ -190,7 +218,7 @@ file_resp = function(x, preview) {
     if (!raw && is_text_file(ext, type) &&
         !inherits(txt <- xfun::try_silent(read_utf8(x, error = TRUE)), 'try-error')) {
       list(payload = mark_full(
-        fenced_block(txt, paste0('.', if (ext == '') 'plain' else ext))
+        fenced_block(txt, lineno_attr(if (ext == '') 'plain' else ext))
       ))
     } else {
       file_raw(x, type)

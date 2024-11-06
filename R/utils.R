@@ -578,27 +578,42 @@ move_attrs = function(x, format = 'html') {
     r = sprintf('(\\\\(%s)\\{.+?) \\\\\\{([^}]+)\\\\\\}(\\})', paste(sec_levels, collapse = '|'))
     x = convert_attrs(x, r, '\\3', function(r, z, z3) {
       z = gsub(r, '\\1\\4', z)
-      k = grepl('unnumbered', z3)
+      k = has_class(z3, 'unnumbered')
       z[k] = sub('{', '*{', z[k], fixed = TRUE)
-      k = grepl('appendix', z3)
+      k = has_class(z3, 'appendix')
       z[k] = '\\appendix'
+      r2 = '(^|.* )id="([^"]+)".*'
+      k = grepl(r2, z3)
+      id = gsub(r2, '\\2', z3[k])
+      z[k] = paste0(z[k], '\\label{', id, '}')
       z
     }, format)
-    # fenced Div's
+    # fenced Div's: first class name is the environment name; options from data-latex
     r = '\n\\\\begin\\{verbatim\\}\n(:::+)( \\{([^\n]+?)\\})? \\1\n\\\\end\\{verbatim\\}\n'
     x = convert_attrs(x, r, '\\3', function(r, z, z3) {
-      r3 = '(^|.*? )class="([^" ]+)[" ].*? data-latex="([^"]*)".*$'
-      z3 = ifelse(
-        grepl(r3, z3), gsub(r3, '{\\2}\\3', z3), ifelse(z3 == '', '', '{@}')
-      )
-      z3 = latex_envir(gsub('\\\\', '\\', z3, fixed = TRUE))
+      r1 = '(^|.*? )class="([^" ]+)[" ].*'
+      r2 = ' data-latex="([^"]*)".*$'
+      r3 = paste0(r1, '?', r2)
+      i3 = grepl(r3, z3)
+      z4 = ifelse(i3, gsub(r3, '{\\2}\\3', z3), ifelse(z3 == '', '', '{@}'))
+      cls = gsub(r1, '\\2', z3)
+      # fig/tab environments don't need the data-latex attribute
+      i4 = !i3 & cls %in% c('figure', 'fig-caption', 'table', 'tab-caption')
+      z4[i4] = sprintf('{%s}', cls[i4])
+      z3 = latex_envir(gsub('\\\\', '\\', z4, fixed = TRUE))
       z3[z3 %in% c('\\begin{@}', '\\end{@}')] = ''
       i = grep('^\\\\begin', z3)
       z3[i] = paste0('\n', z3[i])
       i = grep('^\\\\end', z3)
       z3[i] = paste0(z3[i], '\n')
+      # put fig/tab captions in \caption{}
+      z3 = gsub('\\\\begin\\{(fig|tab)-caption}', '\\\\caption{', z3)
+      z3 = gsub('\\\\end\\{(fig|tab)-caption}', '}', z3)
       z3
     }, format)
+    # remove table env generated from commonmark and use those from fenced Divs
+    x = gsub('\\\\begin\\{table\\}\n(?=\\\\begin\\{tabular\\})', '', x, perl = TRUE)
+    x = gsub('(?<=\\\\end\\{tabular\\}\n)\\\\end\\{table}', '', x, perl = TRUE)
   } else {
     # TODO: remove attributes for other formats
   }
@@ -624,7 +639,7 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
       if ((n <- length(i))) {
         # merge multiple classes into one class attribute
         a[i] = sub('^[.]', '', a[i])
-        a[i] = c(rep('', n - 1), sprintf('class="%s"', paste(a[i], collapse = ' ')))
+        a[i] = c(sprintf('class="%s"', paste(a[i], collapse = ' ')), rep('', n - 1))
         a = c(a[i], a[-i])
       }
       if (length(i <- grep('^#', a))) {
@@ -633,6 +648,8 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
       }
       a
     })
+    # remove spaces after class="..." (caused by merging multiple classes)
+    z2 = sub('(^| )(class="[^"]+")  +', '\\1\\2 ', z2)
     f(r, z, str_trim(z2))
   })
 }
@@ -693,7 +710,7 @@ unique_id = function(x, empty) {
 
 # test if a class name exists in attributes
 has_class = function(x, class) {
-  grepl(sprintf(' class="([^"]+ )?%s( [^"]+)?"', class), x)
+  grepl(sprintf('(^| )class="([^"]+ )?%s( [^"]+)?"', class), x)
 }
 
 # number sections in HTML output
@@ -819,6 +836,17 @@ number_refs = function(x, r, katex = TRUE) {
 # add a special anchor [](#@id) to text, to be used to resolved cross-references
 add_ref = function(id, type, x = NULL) {
   c(sprintf('[](#@%s:%s)', type, id), x)
+}
+
+# make cross-refs for LaTeX output, to be resolved by a LaTeX engine
+latex_refs = function(x, r, clever = FALSE) {
+  ar = paste0('@', r)
+  r0 = function(a, b) sprintf('\\\\protect\\\\hyperlink\\{%s\\}\\{%s\\}', a, b)
+  r1 = r0(ar, '\\s*')  # \label{}
+  r2 = r0(r, ar)  # \ref{}
+  x = gsub(r1, '\\\\label{\\1}', x)
+  x = gsub(r2, sprintf('\\\\%sref{\\1}', if (clever) 'c' else ''), x)
+  x
 }
 
 embed_resources = function(x, options) {
