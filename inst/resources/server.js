@@ -7,34 +7,79 @@
     req.send();
     req.onload = callback;
   }
-  function show_dialog(resp) {
+  function new_dialog(text, error, html, action = el => el.close(), callback = (el, b) => {}) {
     let el = d.querySelector('dialog.litedown-dialog');
     if (!el) {
       el = d.createElement('dialog');
       el.className = 'litedown-dialog';
-      el.innerHTML = '<p></p><button>OK</button>';
-      el.querySelector('button').onclick = e => el.close();
+      el.innerHTML = '<div></div><p><button>OK</button></p>';
       d.body.append(el);
     }
-    const p = el.firstElementChild, t = resp.responseText;
-    p.innerText = t.toLowerCase() === 'connection refused' ? (t + '; please re-run litedown::roam()') : t;
-    if (resp.status !== 200) p.className = 'error';
+    const b = el.querySelector('button');
+    b.onclick = e => action(el, b);
+    const p = el.firstElementChild;
+    p[(html && !error) ? 'innerHTML' : 'innerText'] = text.toLowerCase() === 'connection refused' ?
+      (text + '; please re-run litedown::roam()') : text;
+    if (error) p.className = 'error';
+    callback(el, b);
     el.showModal();
+  }
+  function show_dialog(resp) {
+    new_dialog(resp.responseText, resp.status !== 200);
+  }
+  // create a new file
+  function new_file() {
+    new_req(location.href, 'new', e => {
+      new_dialog(e.target.responseText, e.target.status !== 200, true, (el, b) => {
+        const file = el.querySelector('#filename-input').value;
+        if (!file || b.innerText === 'Cancel') return el.close();
+        const o = location.origin, p = location.pathname,
+          u = o + p + (/\/$/.test(p) ? '' : '/../') + file, features = [];
+        el.querySelectorAll('input[type="checkbox"]').forEach(input => {
+          if (input.checked) features.push(input.name);
+        });
+        new_req(u, 'new:' + features.join(','), e => {
+          const text = e.target.responseText;
+          switch (text) {
+            case 'view': location.href = u + '?preview=2'; break;
+            case 'true': break;
+            case 'false': new_dialog('Failed to create the file', true); break;
+            default: new_dialog(text, true);
+          }
+        });
+      }, (el, b) => {
+        b.innerText = 'Cancel';
+        const input = el.querySelector('#filename-input'),
+          options = [...el.querySelector('#file-list').options].map(o => o.value);
+        input.onchange = e => {
+          const v = input.value.trim();
+          if (!/.+\.[a-zA-Z0-9]+$/.test(v)) {
+            input.value = v + '.Rmd'; input.oninput();
+          }
+        };
+        input.oninput = e => {
+          const v = input.value.trim(), X = '❌';
+          b.innerText = (v === '' || v.startsWith(X) || options.includes(v) || options.includes(X + ' ' + v)) ? 'Cancel' : 'OK';
+        };
+      });
+    });
   }
   // remove empty frontmatter
   const fm = d.querySelector('.frontmatter');
-  if (fm && !fm.innerText) fm.remove();
+  fm && !fm.innerText.trim() && fm.remove();
   const chapters = d.querySelectorAll('div[data-source]');
   // add edit buttons for book chapters
-  chapters.forEach(el => {
+  chapters.length > 1 && chapters.forEach((el, i) => {
     const u = el.dataset.source;
-    u && !el.querySelector('.pencil') &&
-      el.insertAdjacentHTML('afterbegin', `<span class="buttons"><a href="?path=${u}" title="Open ${u}">✎</a></span>`);
+    if (!u || el.querySelector('.buttons')) return;
+    const u2 = Array((u.match(/\/+/g) || []).length).fill('../').join(''),
+      a2 = i === 0 ? '' : `<a href="${u2}${u}?preview=2" class="btn-lite run" title="Preview single chapter">⏵</a>`;
+    el.insertAdjacentHTML('afterbegin', `<span class="buttons">${a2}<a href="?path=${u}" class="btn-lite open pencil" title="Open ${u}">✎</a></span>`);
   });
   const nav = d.querySelector('.nav-path, .title h1');
   const btn = nav.querySelector('.buttons') || d.createElement('span');
   btn.className = 'buttons';
-  ['back', 'forward', 'refresh', 'print'].forEach((action, i) => {
+  ['back', 'forward', 'new', 'refresh', 'print'].forEach((action, i) => {
     if (btn.querySelector(`.${action}`)) return;
     const a = d.createElement('a');
     a.href = '#'; a.title = action[0].toUpperCase() + action.slice(1);
@@ -44,7 +89,7 @@
     })[action];
     if (k) a.title += ` (${k})`;
     a.className = action + ' btn-lite';
-    a.innerText = ['←', '→', '⟳', '⎙'][i];
+    a.innerText = ['←', '→', '+', '⟳', '⎙'][i];
     a.onclick = e => btnAction(e, action);
     btn.append(a);
   });
@@ -55,9 +100,13 @@
   function btnAction(e, action) {
     if (!action) return;
     e.preventDefault();
-    action === 'print' ? window.print() : (
-      action === 'refresh' ? location.reload() : history[action]()
-    );
+    switch (action) {
+      case 'back': history.back(); break;
+      case 'forward': history.forward(); break;
+      case 'new': new_file(); break;
+      case 'refresh': location.reload(); break;
+      case 'print': window.print();
+    }
   }
   // add classes and events to edit buttons
   d.querySelectorAll('a[href]').forEach(a => {
@@ -91,6 +140,8 @@
       // only check assets served by local server
       if (a && u && !(u.startsWith(location.origin) && u.includes('/custom/litedown/')))
         return;
+      // ignore plots under *__files/
+      if (u && u.includes('__files/')) return;
       if (el.dataset.wait) return;
       el.dataset.wait = 1;  // don't send another request while waiting
       new_req(u, q ? (a ? 'asset' : `book:${el.dataset[s]}`) : 'page', e => {
@@ -104,6 +155,7 @@
           } else if (s) {
             // update a book chapter (response is an HTML fragment)
             update_chapter(el, res);
+            window.mermaid && mermaid?.init();
             // also reload js
             d.querySelectorAll('script[src]').forEach(update_script);
           } else {
@@ -117,13 +169,7 @@
   }
   function update_chapter(el, html) {
     const w = d.createElement('div'); w.innerHTML = html;
-    // current chapter number
-    const n = el.querySelector('.section-number')?.innerText.replace(/^([0-9A-Z]+).*/, '$1');
-    // change the leading 1 to n in section numbers
-    w.querySelectorAll('.section-number').forEach(el => {
-      const t = el.innerText.match(/^(\d+)(.*)/);
-      if (t.length === 3) el.innerText = `${n.match(/[A-Z]/) ? n : (t[1] - 1 + (+n || 1))}${t[2]}`;
-    });
+    w.querySelector('#TOC')?.remove();
     w.firstElementChild.className = el.className;
     // TODO: update fig/tab numbers
     let q = '[class^="ref-number-"]';

@@ -5,10 +5,13 @@
 #' output document format. The main differences between this package and
 #' \pkg{rmarkdown} are that it does not use Pandoc or \pkg{knitr} (i.e., fewer
 #' dependencies), and it also has fewer Markdown features.
-#' @importFrom xfun alnum_id base64_uri csv_options download_cache fenced_block
-#'   fenced_div file_exists file_ext grep_sub in_dir loadable new_record
-#'   normalize_path prose_index raw_string read_all read_utf8 record_print
-#'   Rscript_call sans_ext split_lines with_ext write_utf8
+#' @importFrom xfun alnum_id base64_uri csv_options del_empty_dir dir_create
+#'   divide_chunk download_cache exit_call fenced_block fenced_div file_exists
+#'   file_ext grep_sub html_escape in_dir is_abs_path is_blank is_rel_path
+#'   loadable mime_type new_app new_record normalize_path parse_only prose_index
+#'   raw_string read_all read_utf8 record_print relative_path Rscript_call
+#'   same_path sans_ext set_envvar split_lines try_error try_silent with_ext
+#'   write_utf8
 '_PACKAGE'
 
 # an internal environment to store some intermediate objects
@@ -115,10 +118,11 @@ vig_filter = function(ifile, encoding) {
 #'   `pkg_desc()` returns an HTML table containing the package metadata.
 #' @export
 #' @examples
+#' \dontrun{
 #' litedown::pkg_desc()
 #' litedown::pkg_news()
 #' litedown::pkg_citation()
-#' litedown::pkg_manual()
+#' }
 pkg_desc = function(name = detect_pkg()) {
   fields = c(
     'Title', 'Version', 'Description', 'Depends', 'Imports', 'Suggests',
@@ -133,16 +137,13 @@ pkg_desc = function(name = detect_pkg()) {
   names(d) = fields
   # remove single quotes on words (which are unnecessary IMO)
   for (i in c('Title', 'Description')) d[[i]] = sans_sq(d[[i]])
-  # format authors
-  if (is.na(d[['Author']])) d$Author = one_string(by = ',', format(
-    eval(xfun::parse_only(d[['Authors@R']])), include = c('given', 'family', 'role')
-  ))
+  d[['Author']] = one_string(pkg_authors(d), ', ')
   d[['Authors@R']] = NULL
   # convert URLs to <a>, and escape HTML in other fields
   for (i in names(d)) d[[i]] = if (!is.na(d[[i]])) {
-    if (i %in% c('URL', 'BugReports')) {
+    if (i %in% c('Description', 'URL', 'BugReports', 'Author')) {
       sans_p(commonmark::markdown_html(d[[i]], extensions = 'autolink'))
-    } else xfun::html_escape(d[[i]])
+    } else html_escape(d[[i]])
   }
   d = unlist(d)
   res = paste0(
@@ -151,7 +152,28 @@ pkg_desc = function(name = detect_pkg()) {
       paste0('\n<td>', d, '</td>'), '\n</tr>', collapse = '\n'
     ), '\n</tbody></table>'
   )
-  new_asis(res)
+
+  new_asis(c(res, vest(css = '@manual')))
+}
+
+# format authors, adding URL and ORCID links as appropriate
+pkg_authors = function(desc, role = NULL, extra = TRUE) {
+  if (is.null(a <- desc[['Authors@R']])) return(desc[['Author']])
+  a = eval(parse_only(a))
+  a = uapply(a, function(x) {
+    if (length(role) && !any(role %in% x$role)) return()
+    role = if (extra && length(x$role)) paste0('[', one_string(x$role, ', '), ']')
+    name = paste(x$given, x$family)
+    comment = as.list(x$comment)
+    orcid = if (extra) sprintf(
+      '[![ORCID iD](https://cloud.r-project.org/web/orcid.svg){.orcid}](https://orcid.org/%s)',
+      comment[["ORCID"]]
+    )
+    link = comment[['URL']]
+    if (length(link)) name = sprintf('[%s](%s)', name, link)
+    one_string(c(name, orcid, role), ' ')
+  })
+  a
 }
 
 #' @param path For [pkg_news()], path to the `NEWS.md` file. If empty, [news()]
@@ -180,7 +202,7 @@ pkg_news = function(
     for (v in unique(db$Version)) {
       df = db[db$Version == v, ]
       res = c(
-        res, paste('## Changes in version', v, a), '',
+        res, paste('##', name, v, a), '',
         if (all(df$Category == '')) paste0(df$HTML, '\n') else paste0(
           '### ', df$Category, a, '\n\n', df$HTML, '\n\n'
         ), ''
@@ -192,6 +214,8 @@ pkg_news = function(
       res = res[h[1]:(h[1 + recent] - 1)]
     # lower heading levels: # -> ##, ## -> ###, etc, and add attributes
     for (i in 2:1) res = sub(sprintf('^(#{%d} .+)', i), paste0('#\\1', a), res)
+    # shorten headings
+    res = gsub('^## CHANGES IN ([^ ]+) VERSION( .+)', '## \\1\\2', res)
   }
   new_asis(res)
 }
@@ -199,7 +223,7 @@ pkg_news = function(
 # classes for section headings in news, code, and manual
 header_class = function(toc, number_sections, md = TRUE) {
   a = c(if (!toc) 'unlisted', if (!number_sections) 'unnumbered')
-  if (md) a = paste0('.', a)
+  if (md && length(a)) a = paste0('.', a)
   a = one_string(a, ' ')
   if (a != '') a = if (md) paste0(' {', a, '}') else paste0(' class="', a, '"')
   a
@@ -207,16 +231,27 @@ header_class = function(toc, number_sections, md = TRUE) {
 
 #' @param pattern A regular expression to match filenames that should be treated
 #'   as source code.
+#' @param link Whether to add links on the file paths of source code. By
+#'   default, if a GitHub repo link is detected from the `BugReports` field of
+#'   the package `DESCRIPTION`, GitHub links will be added to file paths. You
+#'   can also provide a string template containing the placeholder `%s` (which
+#'   will be filled out with the file paths via `sprintf()`), e.g.,
+#'   `https://github.com/yihui/litedown/blob/main/%s`.
 #' @return `pkg_code()` returns the package source code under the `R/` and
 #'   `src/` directories.
 #' @rdname pkg_desc
 #' @export
 pkg_code = function(
   path = attr(detect_pkg(), 'path'), pattern = '[.](R|c|h|f|cpp)$', toc = TRUE,
-  number_sections = TRUE
+  number_sections = TRUE, link = TRUE
 ) {
   if (!isTRUE(dir.exists(path))) return()
   a = header_class(toc, number_sections)
+  if (isTRUE(link)) {
+    u = read.dcf(file.path(path, 'DESCRIPTION'), 'BugReports')[1, 1]
+    u = grep_sub('^(https://github.com/[^/]+/[^/]+/).*', '\\1blob/HEAD/%s', u)
+    if (length(u)) link = u
+  }
   ds = c('R', 'src')
   ds = ds[ds %in% list.dirs(path, FALSE, FALSE)]
   flat = length(ds) == 1  # if only one dir exists, list files in a flat structure
@@ -224,7 +259,9 @@ pkg_code = function(
     fs = list.files(d, pattern, full.names = TRUE, recursive = TRUE)
     if (length(fs) == 0) return()
     x = uapply(fs, function(f) c(
-      sprintf('##%s `%s`%s', if (flat) '' else '#', f, a), '',
+      sprintf('##%s %s%s', if (flat) '' else '#', if (is.character(link)) {
+        sprintf('[`%s`](%s)', f, sprintf(link, f))
+      } else sprintf('`%s`', f), a), '',
       fenced_block(read_utf8(f), lineno_attr(file_ext(f), auto = FALSE)), ''
     ))
     e = unique(file_ext(fs))
@@ -254,10 +291,18 @@ tweak_citation = function(x) {
   x
 }
 
+#' @param overview Whether to include the package overview page, i.e., the
+#'   `{name}-package.Rd` page.
+#' @param examples A list of arguments to be passed to [xfun::record()] to run
+#'   examples each help page, e.g., `list(dev = 'svg', dev.args = list(height =
+#'   6))`. If not a list (e.g., `FALSE`), examples will not be run.
 #' @return `pkg_manual()` returns all manual pages of the package in HTML.
 #' @rdname pkg_desc
 #' @export
-pkg_manual = function(name = detect_pkg(), toc = TRUE, number_sections = TRUE) {
+pkg_manual = function(
+  name = detect_pkg(), toc = TRUE, number_sections = TRUE, overview = TRUE,
+  examples = list()
+) {
   links = tools::findHTMLlinks('')
   # resolve internal links (will assign IDs of the form sec:man-ID to all h2)
   r = sprintf('^[.][.]/[.][.]/(%s)/html/(.+)[.]html$', name)
@@ -266,41 +311,50 @@ pkg_manual = function(name = detect_pkg(), toc = TRUE, number_sections = TRUE) {
   # resolve external links to specific man pages on https://rdrr.io
   r = sprintf('^[.][.]/[.][.]/(%s)/html/', paste(xfun::base_pkgs(), collapse = '|'))
   links = sub(r, 'https://rdrr.io/r/\\1/', links)
-  r = '^[.][.]/[.][.]/([^/]+)/html/'
-  links = sub(r, 'https://rdrr.io/cran/\\1/man/', links)
 
   db = tools::Rd_db(name)  # all Rd pages
+  intro = paste0(name, '-package.Rd')  # the name-package entry (package overview)
+  entries = setdiff(names(db), intro)
+  db = db[c(if (overview && intro %in% names(db)) intro, entries)]
   al = lapply(db, Rd_aliases)
 
   cl = header_class(toc, number_sections, FALSE)
   r1 = '<code class="reqn">\\s*([^<]+?)\\s*</code>'  # inline math
   r2 = sprintf('<p[^>]*>\\s*%s\\s*</p>', r1)  # display math
-  # show the page name-package first
-  idx = vapply(al, is.element, el = paste0(name, '-package'), FALSE)
-  res = uapply(names(db)[order(!idx)], function(i) {
+  res = uapply(names(db), function(i) {
     txt = ''
     con = textConnection('txt', 'w', local = TRUE, encoding = 'UTF-8')
-    tools::Rd2HTML(db[[i]], Links = links, out = con)
-    close(con)
+    tryCatch(
+      tools::Rd2HTML(db[[i]], Links = links, out = con), error = function(e) {
+        warning("The Rd file '", i, "' appears to be malformed.", call. = FALSE)
+        stop(e)
+      }, finally = close(con))
     # extract body, which may end at </main> (R 4.4.x) or </div></body> (R 4.3.x)
-    txt = gsub('.*?(<h2[ |>].*)(</main>|</div>\\s*</body>).*', '\\1', one_string(txt))
+    txt = gsub('(?s).*?(?=<h2)', '', one_string(txt), perl = TRUE)
+    txt = gsub('(</main>|</div>\\s*</body>).*', '', txt)
     # free math from <code>
     txt = gsub(r2, '<p>$$\\1$$</p>', txt)
-    txt = gsub(r1, '\\\\(\\1\\\\)', txt)
+    txt = gsub(r1, '<span>\\\\(\\1\\\\)</span>', txt)
+    # run examples
+    if (is.list(examples)) {
+      xfun::pkg_attach(name)
+      default = list(print = NA, dev.path = 'manual/', dev.args = list(width = 9, height = 7))
+      txt = run_examples(txt, merge_list(default, examples), sans_ext(i))
+    }
     # remove existing ID and class
     for (a in c('id', 'class')) txt = gsub(sprintf('(<h2[^>]*?) %s="[^"]+"', a), '\\1', txt)
-    txt = sub('<h2', paste0('<h2', cl), txt, fixed = TRUE)
-    sub('<h2', sprintf('<h2 id="sec:man-%s"', alnum_id(al[[i]][1])), txt, fixed = TRUE)
+    if (cl != '') txt = sub('<h2', paste0('<h2', cl), txt, fixed = TRUE)
+    sub('<h2', sprintf('<h2 id="sec:man-%s"', sans_ext(i)), txt, fixed = TRUE)
   })
 
   # extract all aliases and put them in the beginning (like a TOC)
   env = asNamespace(name)
-  toc = uapply(al, function(topics) {
+  toc = unlist(.mapply(function(topics, target) {
     fn = uapply(topics, function(x) {
       if (is.function(env[[x]])) paste0(x, '()') else x  # add () after function names
     })
-    sprintf('<a href="#sec:man-%s"><code>%s</code></a>', alnum_id(fn[1]), fn)
-  })
+    sprintf('<a href="#sec:man-%s"><code>%s</code></a>', target, fn)
+  }, list(al, sans_ext(names(al))), list()))
 
   g = toupper(substr(unlist(al), 1, 1))
   g[!g %in% LETTERS] = 'misc'
@@ -310,15 +364,64 @@ pkg_manual = function(name = detect_pkg(), toc = TRUE, number_sections = TRUE) {
     c('<p>', sprintf('<b>-- <kbd>%s</kbd> --</b>', g), x, '</p>')
   }, toc, names(toc)))
 
+  r = '(<a href=")[.][.]/[.][.]/([^/]+)/help/'
+  res = gsub(r, '\\1https://rdrr.io/cran/\\2/man/', res)
   res = gsub(" (id|class)='([^']+)'", ' \\1="\\2"', res)  # ' -> "
   res = gsub('<h3>', '<h3 class="unnumbered unlisted">', res, fixed = TRUE)
   res = gsub('<code id="[^"]+">', '<code>', res)
   res = gsub('(<code[^>]*>)\\s+', '\\1', res)
   res = gsub('\\s+(</code>)', '\\1', res)
+  res = gsub('<div class="sourceCode"><pre>(.+?)</pre></div>', '<pre><code>\\1</code></pre>', res)
+  res = gsub('<div class="sourceCode ([^"]+)"><pre>(.+?)</pre></div>', '<pre><code class="language-\\1">\\2</code></pre>', res)
+  res = gsub('<code class="language-R"', '<code class="language-r"', res, fixed = TRUE)
   res = gsub('&#8288;', '', res, fixed = TRUE)
   res = gsub('<table>', '<table class="table-full">', res, fixed = TRUE)
+  new_asis(c(toc, res, vest(css = '@manual')))
+}
 
-  new_asis(c(toc, res))
+run_examples = function(html, config, path) {
+  config$dev.path = path = paste0(config$dev.path, path)
+  on.exit(del_empty_dir(dirname(path)), add = TRUE)
+  r = '(?s).*?<pre><code[^>]*>(?s)(.+?)</code></pre>'
+  match_replace(html, paste0('(?<=<h3>Examples</h3>)', r), function(x) {
+    code = gsub(r, '\\1', x, perl = TRUE)
+    code = restore_html(str_trim(code))
+    nr1 = 'if (FALSE) {  ## Not run'
+    nr2 = '}  ## Not run'
+    code = gsub('\n?## Not run:\\s*?\n', paste0('\n', nr1, '\n'), code)
+    code = gsub('\n+## End[(]Not run[)]\n*', paste0('\n', nr2, '\n'), code)
+    res = do.call(xfun::record, merge_list(config, list(code = code, envir = globalenv())))
+    idx = seq_along(res); cls = class(res)
+    for (i in idx) {
+      ri = res[[i]]; ci = class(ri)
+      # disable asis output since it may contain raw HTML
+      if ('record_asis' %in% ci) class(res[[i]]) = 'record_output'
+      # split the dontrun block
+      if ('record_source' %in% ci && !any(is.na(nr <- match(c(nr1, nr2), ri)))) {
+        i1 = nr[1]; i2 = nr[2]
+        new_block = function(i, ...) {
+          b = trim_blank(one_string(ri[i]))
+          if (is_blank(b)) b = character()
+          list(structure(b, class = c(ci, ...)))
+        }
+        if (i1 > 1) {
+          res = c(res, new_block((i1 + 1):(i2 - 1), 'fade'))
+          idx = c(idx, i)
+        }
+        n = length(ri)
+        if (i2 < n) {
+          res = c(res, new_block((i2 + 1):n))
+          idx = c(idx, i)
+        }
+        res[i] = if (i1 > 1) new_block(1:(i1 - 1)) else
+          new_block((i1 + 1):(i2 - 1), 'fade')
+      }
+    }
+    res = res[order(idx)]
+    class(res) = cls
+    res = one_string(c('', format(res, 'markdown')))
+    res
+  })
 }
 
 detect_pkg = function(error = TRUE) {

@@ -151,7 +151,7 @@ is_output_full = function(x) isTRUE(attr(x, 'full'))
 # test if input is R code or not (this is based on heuristics and may not be robust)
 is_R = function(input, text) {
   if (is_file(input)) grepl('[.][Rrs]$', input) else {
-    !length(grep('^\\s*```+\\{', text)) && !xfun::try_error(xfun::parse_only(text))
+    !length(grep('^\\s*```+\\{', text)) && !try_error(parse_only(text))
   }
 }
 
@@ -178,17 +178,17 @@ output_path = function(input, output) {
 
 # make sure not to overwrite input file inadvertently
 check_output = function(input, output) {
-  if (file_exists(input) && xfun::same_path(input, output))
+  if (file_exists(input) && same_path(input, output))
     stop('The output file path is the same as input: ', input)
   output
 }
 
 # substitute a variable in template `x` with its value; the variable may have
 # more than one possible name, in which case we try them one by one
-sub_var = function(x, name, value) {
+sub_var = function(x, name, value, ...) {
   for (i in name) {
     if (any(grepl(i, x, fixed = TRUE))) {
-      return(sub(i, one_string(value, test = TRUE), x, fixed = TRUE))
+      return(sub(i, one_string(value, ...), x, fixed = TRUE))
     }
   }
   x
@@ -203,13 +203,95 @@ restore_html = function(x) {
   x
 }
 
+#' Add CSS/JS assets to HTML output
+#'
+#' While CSS/JS assets can be set via the `css`/`js` keys under the `meta` field
+#' of the `html` output format in YAML, this function provides another way to
+#' add them, which can be called in a code chunk to dynamically add assets.
+#' @param feature A character vector of features supported by CSS/JS, e.g.,
+#'   `c('article', 'callout')`. See the row names of `litedown:::assets` for all
+#'   available features. Each feature will be mapped to CSS/JS.
+#' @param css,js Character vectors of CSS/JS assets.
+#' @return A vector of `<link>` (CSS) or `<script>` (JS) tags.
+#' @export
+#' @examples
+#' litedown:::assets[, -1]
+#' # add features
+#' litedown::vest(c('copy-button', 'tabsets'))
+#' # add css/js directly
+#' litedown::vest(css = '@tabsets', js = c('@tabsets', '@fold-details'))
+vest = function(feature = NULL, css = NULL, js = NULL) {
+  if (length(feature)) {
+    a = assets[feature, , drop = FALSE]
+    css = c(a[, 'css'], css); js = c(a[, 'js'], js)
+  }
+  new_asis(c(resolve_files(css, 'css'), resolve_files(js, 'js')), raw = TRUE)
+}
+
+assets = t(data.frame(
+  article = c('side notes, floats, and full-width elements for articles', '@article', '@sidenotes, @appendix'),
+  book = c('cover and chapter pages for books', '@book', NA),
+  callout = c('frames with legends', '@callout', '@callout'),
+  'center-img' = c('center images in paragraphs', NA, '@center-img'),
+  'chapter-toc' = c('add TOC to each chapter', NA, '@chapter-toc'),
+  'copy-button' = c('copy buttons', '@copy-button', '@copy-button'),
+  default = c('default CSS', '@default', NA),
+  'external-link' = c('open external links in new windows', NA, '@external-link'),
+  'fold-details' = c('fold elements (e.g., code blocks)', NA, '@fold-details'),
+  'heading-anchor' = c('add anchor links to headings', '@heading-anchor', '@heading-anchor'),
+  'key-buttons' = c('style keyboard shortcuts', '@key-buttons', '@key-buttons'),
+  pages = c('paginate HTML for printing', '@pages', '@pages'),
+  'right-quote' = c('right-align quote footers', NA, '@right-quote'),
+  snap = c('snap slides', '@snap', '@snap'),
+  tabsets = c('create tabsets from bullet lists or sections', '@tabsets', '@tabsets'),
+  'toc-highlight' = c('highlight TOC items on scroll', NA, '@toc-highlight'),
+  row.names = c('description', 'css', 'js'), check.names = FALSE
+))
+
+# an HTML form for creating new files in roam()
+feature_form = function(path) {
+  nms = rownames(assets)
+  files = list.files(if (dir.exists(path)) path else dirname(path), full.names = TRUE)
+  files = basename(files[file_exists(files)])
+  one_string(c(
+    '<h3>New File</h3>',
+    '<p><label>Filename: <input type="text" id="filename-input" list="file-list" placeholder="enter a new filename (not in the list)" /></label></p>',
+    if (length(files)) c(
+      '<datalist id="file-list">',
+      sprintf('<option value="&#10060; %s">', html_escape(files, TRUE)),
+      '</datalist>'
+    ),
+    '<p><b>Select HTML features</b></p>', '<p style="columns:20em;">',
+    sprintf(
+      '<label><input name="%s" type="checkbox" /> <a href="https://yihui.org/litedown/#sec:%s" target="_blank"><code>%s</code></a>: %s</label>',
+      nms, nms, nms, html_escape(assets[, 'description'])
+    ), '</p>'
+  ))
+}
+
+na_omit = function(x) x[!is.na(x)]
+
+# accumulate variable values
+acc_var = local({
+  db = list()
+  function(...) {
+    v = list(...)
+    if (is.null(nms <- names(v))) {
+      v = unlist(v)
+      switch(length(v) + 1, db <<- list(), db[[v]], db[v])
+    } else {
+      for (i in nms) db[[i]] <<- c(db[[i]], v[[i]])
+    }
+  }
+})
+
 # set js/css variables according to the js_math option
-set_math = function(meta, o, is_katex) {
+set_math = function(o, is_katex) {
   if (is_katex) o$js = c(o$js, 'dist/contrib/auto-render.min.js')
   js = js_combine(sprintf('npm/%s%s/%s', o$package, o$version, o$js))
   js = if (is_katex) c(js, '@render-katex') else c('@mathjax-config', js)
   css = sprintf('@npm/%s%s/%s', o$package, o$version, o$css)
-  add_meta(meta, list(js = js, css = css))
+  acc_var(js = js, css = css)
 }
 
 # use jsdelivr's combine feature
@@ -242,16 +324,15 @@ js_libs = list(
   )
 )
 
-add_meta = function(x, v) {
-  for (i in names(v)) x[[i]] = c(v[[i]], x[[i]])
-  x
-}
-
 # set js/css variables according to the js_highlight option
-set_highlight = function(meta, options, html) {
+set_highlight = function(options, html) {
+  # if the class .line-numbers is present, add js/css for line numbers
+  if (any(grepl('<code class="[^"]*line-numbers', html)))
+    acc_var(js = '@code-line-numbers', css = '@code-line-numbers')
+
   r = '(?<=<code class="language-)([^"]+)(?=")'
-  if (!any(grepl(r, html, perl = TRUE))) return(meta)
-  if (!length(o <- js_options(options[['js_highlight']], 'prism'))) return(meta)
+  if (!any(grepl(r, html, perl = TRUE))) return()
+  if (!length(o <- js_options(options[['js_highlight']], 'prism'))) return()
 
   p = o$package
   # return jsdelivr subpaths
@@ -272,7 +353,7 @@ set_highlight = function(meta, options, html) {
 
   # style -> css
   css = c(if (is.null(s <- o$style)) {
-    if (p == 'prism') '@prism-xcode'  # use prism-xcode.css in the misc.js repo
+    if (p == 'prism') '@prism-xcode'  # use prism-xcode.css in the lite.js repo
   } else if (is.character(s)) js_combine(get_path(switch(
     p,
     highlight = sprintf('build/styles/%s.min.css', s),
@@ -302,7 +383,7 @@ set_highlight = function(meta, options, html) {
   # embedding faster because each js is a separate URL that has been downloaded)
   js = if (is.null(l)) paste0('@', js) else js_combine(js)
 
-  add_meta(meta, list(js = js, css = css))
+  acc_var(js = js, css = css)
 }
 
 # figure out which language support files are needed for highlight.js/prism.js
@@ -328,7 +409,7 @@ lang_files = function(package, path, langs) {
     # then find their aliases
     a = lapply(match_full(x, '(?<=aliases:\\[)[^]]+(?=\\])'), function(z) {
       z = unlist(strsplit(z, '[",]'))
-      z[!xfun::is_blank(z)]
+      z[!is_blank(z)]
     })
     l = c(l, unlist(a))  # all possible languages that can be highlighted
     l = setdiff(langs, l)  # languages not supported by default
@@ -386,7 +467,7 @@ lang_files = function(package, path, langs) {
 
 # test if a URL can be downloaded
 downloadable = function(u, type = 'text') {
-  !xfun::try_error(download_cache$get(u, type))
+  !try_error(download_cache$get(u, type))
 }
 
 # quote a vector and combine by commas
@@ -397,9 +478,12 @@ get_option = function(name, format, ...) {
   getOption(sprintf('litedown.%s.%s', format, name), ...)
 }
 
-# if a string is a file path and test = TRUE, read the file; then concatenate elements by \n
-one_string = function(x, by = '\n', test = FALSE) {
-  if (test && is_file(x)) x = read_utf8(x)
+# if a string is a file path found under test dirs, read the file; then concatenate elements by \n
+one_string = function(x, by = '\n', test = NULL) {
+  if (length(test) && is_file(x)) {
+    p = if (is_abs_path(x)) x else xfun::existing_files(file.path(c(test, '.'), x))
+    if (length(p)) x = read_utf8(p[1]) else stop("The file '", x, "' is not found")
+  }
   paste(x, collapse = by)
 }
 
@@ -496,6 +580,7 @@ build_toc = function(html, n = 3) {
   items = items[!has_class(items, 'unlisted')]
   if (length(items) == 0) return()
   x = gsub(r, '<toc\\2>\\3</toc>', items)  # use a tag <toc> to protect heading text
+  x = gsub('<a[^>]+>|</a>', '', x)  # clean up <a>
   h = as.integer(gsub('^h', '', gsub(r, '\\1', items)))  # heading level
   s = strrep('  ', seq_len(n) - 1)  # indent
   x = paste0(s[h], '- ', x)  # create an unordered list
@@ -598,7 +683,7 @@ move_attrs = function(x, format = 'html') {
       z4 = ifelse(i3, gsub(r3, '{\\2}\\3', z3), ifelse(z3 == '', '', '{@}'))
       cls = gsub(r1, '\\2', z3)
       # fig/tab environments don't need the data-latex attribute
-      i4 = !i3 & cls %in% c('figure', 'fig-caption', 'table', 'tab-caption')
+      i4 = !i3 & cls %in% c('figure', 'caption', 'table')
       z4[i4] = sprintf('{%s}', cls[i4])
       z3 = latex_envir(gsub('\\\\', '\\', z4, fixed = TRUE))
       z3[z3 %in% c('\\begin{@}', '\\end{@}')] = ''
@@ -607,8 +692,8 @@ move_attrs = function(x, format = 'html') {
       i = grep('^\\\\end', z3)
       z3[i] = paste0(z3[i], '\n')
       # put fig/tab captions in \caption{}
-      z3 = gsub('\\\\begin\\{(fig|tab)-caption}', '\\\\caption{', z3)
-      z3 = gsub('\\\\end\\{(fig|tab)-caption}', '}', z3)
+      z3 = gsub('\\begin{caption}', '\\caption{', z3, fixed = TRUE)
+      z3 = gsub('\\end{caption}', '}', z3, fixed = TRUE)
       z3
     }, format)
     # remove table env generated from commonmark and use those from fenced Divs
@@ -655,6 +740,8 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
 }
 
 str_trim = function(x) gsub('^\\s+|\\s+$', '', x)
+# trim blank lines from both ends
+trim_blank = function(x) gsub('^(\\s*\n)+|\n\\s*$', '', x)
 
 # {A}, '', {B}, {C}, '', '' -> \begin{A}\end{A}\begin{B}\begin{C}\end{C}\end{B}
 latex_envir = function(x, env = NULL) {
@@ -720,10 +807,16 @@ number_sections = function(x) {
   h = min(as.integer(h))  # highest level of headings
   r = '<h([1-6])([^>]*)>(?!<span class="section-number)'
   n = rep(0, 6)  # counters for all levels of headings
+  # when previewing a book chapter, set the start number if possible
+  is_appendix = FALSE  # the start "number" for appendix is A-Z
+  if (length(f <- .env$current_file)) {
+    if (length(n_start <- grep_sub('^([0-9]+|[A-Z])[-_].+', '\\1', basename(f))))
+      if (!(is_appendix <- grepl('^[A-Z]$', n_start))) n[1] = as.integer(n_start) - 1
+  }
   k0 = 6  # level of last unnumbered heading
   match_replace(x, r, function(z) {
-    z1 = as.integer(sub(r, '\\1', z, perl = TRUE))
-    z2 = sub(r, '\\2', z, perl = TRUE)
+    z1 = as.integer(sub(r, '\\1', z, perl = TRUE))  # heading levels
+    z2 = sub(r, '\\2', z, perl = TRUE)  # heading attributes
     num_sections = identity  # generate appendix numbers
     for (i in seq_along(z)) {
       k = z1[i]
@@ -741,9 +834,9 @@ number_sections = function(x) {
           strrep('#', h), ').'
         )
         num_sections = local({
-          a = n[k]  # an offset
+          a = n[k]  # an offset (highest top-level heading number before appendix)
           # number headings with A-Z or roman numerals
-          num = if (sum(z1[i:length(z)] == h) - 1 > length(LETTERS)) as.roman else {
+          num = if (sum(z1[i:length(z)] == h) - 1 > 26) as.roman else {
             function(i) LETTERS[i]
           }
           function(s) {
@@ -760,7 +853,8 @@ number_sections = function(x) {
       n[k] <<- n[k] + 1
       # remove leading 0's
       s = if (h > 1) n[-(1:(h - 1))] else n
-      s = paste(num_sections(s), collapse = '.')
+      if (is_appendix) s[1] = n_start else s = num_sections(s)
+      s = paste(s, collapse = '.')
       s = gsub('([.]0)+$', '', s)  # remove trailing 0's
       # if section number doesn't contain '.', assign a class 'main-number' to the number
       z[i] = paste0(z[i], sprintf(
@@ -855,23 +949,33 @@ embed_resources = function(x, options) {
   if (!any(embed)) return(x)
   clean = isTRUE(options[['embed_cleanup']])
 
-  r = '(<img[^>]* src="|<!--#[^>]*? style="background-image: url\\("?)([^"]+?)("|"?\\);)'
-  x = match_replace(x, r, function(z) {
+  # find images in <img> and (for slides only) comments
+  rs = c(
+    '(<img src=")([^"]+)("[^>]*?/>)',
+    '(<!--#[^>]*? style="background-image: url\\("?)([^"]+?)("?\\);)'
+  )
+  for (r in rs) x = match_replace(x, r, function(z) {
     z1 = sub(r, '\\1', z)
     z2 = sub(r, '\\2', z)
     z3 = sub(r, '\\3', z)
     # skip images already base64 encoded
     for (i in grep('^data:.+;base64,.+', z2, invert = TRUE)) {
-      if (is_https(f <- z2[i])) {
-        if (embed[1]) z2[i] = download_cache$get(f, 'base64')
-      } else if (file_exists(f <- URLdecode(f))) {
-        z2[i] = base64_uri(f)
-        if (clean && normalize_path(f) %in% .env$plot_files) file.remove(f)
-      } else {
-        warning("File '", f, "' not found (hence cannot be embedded).")
+      is_svg = grepl('[.]svg$', f <- z2[i]) && grepl('^<img', z1[i])
+      a = if (is_svg) str_trim(gsub('^"|/>$', '', z3[i])) else ''
+      if (is_https(f)) {
+        if (embed[1]) z2[i] = if (!is_svg) download_cache$get(f, 'base64') else {
+          download_cache$get(f, 'text', function(xml) process_svg(xml, a))
+        }
+      } else if (embed[2]) {
+        if (file_exists(f <- URLdecode(f))) {
+          z2[i] = if (is_svg) process_svg(read_utf8(f), a) else base64_uri(f)
+          if (clean && normalize_path(f) %in% .env$plot_files) file.remove(f)
+        } else {
+          warning("File '", f, "' not found (hence cannot be embedded).")
+        }
       }
     }
-    paste0(z1, z2, z3)
+    ifelse(grepl('<svg', z2), z2, paste0(z1, z2, z3))
   })
 
   # CSS and JS
@@ -905,6 +1009,19 @@ embed_resources = function(x, options) {
     }
   }
   x
+}
+
+# remove the xml/doctype declaration in svg, and add attributes
+process_svg = function(x, attr) {
+  while (length(x) > 0 && !grepl('^\\s*<svg .+', x[1])) x = x[-1]
+  if (length(x) > 0 && !attr %in% c('', 'alt=""')) {
+    x[1] = if (grepl(r <- '\\s*>\\s*$', x[1])) {
+      paste0(gsub(r, ' ', x[1]), attr, '>')
+    } else {
+      paste(x[1], attr)
+    }
+  }
+  one_string(x)
 }
 
 normalize_options = function(x, format = 'html') {
@@ -965,13 +1082,39 @@ jsdelivr = function(file, dir = 'npm/@xiee/utils/') {
 # get the latest version of jsdelivr assets
 jsd_version = local({
   vers = list()  # cache versions in current session
-  function(pkg, force = FALSE) {
-    if (!force && is.character(v <- vers[[pkg]])) return(v)
+  # find version from local cache
+  p_cache = function() {
+    d = if (getRversion() >= '4.0') tools::R_user_dir('litedown', 'cache') else {
+      file.path(dirname(tempdir()), 'R', 'cache', 'litedown')
+    }
+    file.path(d, 'jsd_versions.rds')
+  }
+  # cache expires after one week by default
+  v_cache = function(pkg, force, delta = getOption('litedown.jsdelivr.cache', 604800)) {
+    if (!force && file.exists(f <- p_cache())) {
+      info = readRDS(f)[[pkg]]
+      if (!is.null(t <- info$time) && Sys.time() - t <= delta) info$version
+    }
+  }
+  # query version from jsdelivr api
+  v_api = function(pkg) {
     x = tryCatch(
-      xfun::read_utf8(paste0('https://data.jsdelivr.com/v1/packages/', pkg, '/resolved')),
-      error = function(e) ''
+      read_utf8(paste0('https://data.jsdelivr.com/v1/packages/', pkg, '/resolved')),
+      error = function(e) v_cache(pkg, FALSE, Inf)  # fall back to local cache
     )
     v = grep_sub('.*"version":\\s*"([0-9.]+)".*', '@\\1', x)
+    if (length(v)) {
+      if (dir_create(dirname(f <- p_cache()))) {
+        info = if (file.exists(f)) readRDS(f) else list()
+        info[[pkg]] = list(version = v[1], time = Sys.time())
+        saveRDS(info, f)
+      }
+      v[1]
+    }
+  }
+  function(pkg, force = FALSE) {
+    if (!force && is.character(v <- vers[[pkg]])) return(v)
+    v = v_cache(pkg, force) %||% v_api(pkg)
     vers[[pkg]] <<- if (length(v)) v[1] else ''
   }
 })
@@ -1046,18 +1189,29 @@ resolve_files = function(x, ext = 'css') {
   x[i] = jsdelivr(x[i], '')
   x[i0] = jsd_resolve(x[i0])
 
-  # built-in resources in this package
   i = dirname(x) == '.' & file_ext(x) == '' & !file_exists(x)
-  x[i & (x == 'slides')] = 'snap'  # alias slides.css -> snap.css
-  files = list.files(pkg_file('resources'), sprintf('[.]%s$', ext), full.names = TRUE)
-  b = sans_ext(basename(files))
-  if (any(!x[i] %in% b)) stop(
-    "Invalid '", ext, "' option: ", paste0("'", setdiff(x[i], b), "'", collapse = ', '),
-    " (possible values are: ", paste0("'", b, "'", collapse = ', '), ")"
-  )
-  x[i] = files[match(x[i], b)]
+  x[i] = map_assets(x[i], ext)
   x = if (ext %in% c('css', 'js')) gen_tags(x, ext) else read_all(x)
   I(x)
+}
+
+map_assets = function(x, ext) {
+  if (length(x) == 0) return(x)
+  x[x == 'slides'] = 'snap'  # alias slides.css -> snap.css
+  # built-in resources in this package
+  b1 = c(if (ext != 'js') 'default', 'snap')
+  i1 = x %in% b1
+  x[i1] = file.path(pkg_file('resources'), sprintf('%s.%s', x[i1], ext))
+  # in case users forgot to type @ for jsdelivr assets
+  b2 = sub('@', '', assets[, ext])
+  i2 = x %in% b2
+  x[i2] = jsdelivr(sprintf('%s/%s.min.%s', ext, x[i2], ext))
+  x[i2] = jsd_resolve(x[i2])
+  if (any(i3 <- !(i1 | i2))) stop(
+    "Invalid '", ext, "' option: ", paste0("'", x[i3], "'", collapse = ', '),
+    " (possible values are: ", paste0("'", unique(c(b1, na_omit(b2))), "'", collapse = ', '), ")"
+  )
+  x
 }
 
 # generate tags for css/js depending on whether they need to be embedded or offline
@@ -1070,7 +1224,7 @@ gen_tag = function(x, ext = file_ext(x), embed_https = FALSE, embed_local = FALS
     t2 = c('<script>', '</script>')
   } else stop("The file extension '", ext, "' is not supported.")
   is_web = is_https(x)
-  is_rel = !is_web && xfun::is_rel_path(x)
+  is_rel = !is_web && is_rel_path(x)
   if (is_web && embed_https && xfun::url_filename(x) == 'MathJax.js') {
     warning('MathJax.js cannot be embedded. Please use MathJax v3 instead.')
     embed_https = FALSE
@@ -1089,7 +1243,7 @@ gen_tag = function(x, ext = file_ext(x), embed_https = FALSE, embed_local = FALS
 is_https = function(x) grepl('^https?://', x)
 
 # a vectorized version
-gen_tags = function(...) mapply(gen_tag, ...)
+gen_tags = function(...) mapply(gen_tag, ..., USE.NAMES = FALSE)
 
 # read CSS/JS and embed external fonts/background images, etc.
 resolve_external = function(x, web = TRUE, ext = '') {
@@ -1142,32 +1296,6 @@ base64_url = function(url, code, ext) {
     })
   }
   code
-}
-
-# resolve HTML dependencies and write out the appropriate HTML code to `header-includes`
-add_html_deps = function(meta, output, embed = TRUE) {
-  if (!loadable('knitr')) return(meta)
-  deps = c(knitr::knit_meta(), .env$knit_meta)
-  if (length(deps) == 0 || !any(vapply(deps, inherits, logical(1), 'html_dependency'))) return(meta)
-  if (!loadable('rmarkdown')) stop(
-    'It seems the document contains HTML dependencies, which require ',
-    'the rmarkdown package but it is not available.'
-  )
-  deps = rmarkdown:::flatten_html_dependencies(deps)
-  deps = rmarkdown:::html_dependency_resolver(deps)
-  if (length(deps) == 0) return(meta)
-  d1 = d2 = NULL
-  # if resources need to be embedded, use their absolute paths; otherwise copy
-  # dependencies to 'libs/' and use relative paths
-  if (!embed) {
-    if (is.character(output)) {
-      owd = setwd(dirname(output)); on.exit(setwd(owd), add = TRUE)
-    }
-    d1 = 'libs'; d2 = '.'
-  }
-  deps = rmarkdown:::html_dependencies_as_string(deps, d1, d2)
-  meta[['header-includes']] = paste(deps, one_string(meta[['header-includes']], test = TRUE), sep = '\n')
-  meta
 }
 
 # compact HTML code

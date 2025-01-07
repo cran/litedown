@@ -16,7 +16,7 @@
 #' @export
 roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
   # a proxy server to return files under inst/resources/
-  s = xfun::new_app('.litedown', function(path, ...) {
+  s = new_app('.litedown', function(path, ...) {
     file_raw(pkg_file('resources', path))
   }, open = FALSE)
   # the URL needs to be translated on RStudio Server
@@ -31,10 +31,10 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
       file.info(list.files(path, full.names = TRUE))[, 'mtime', drop = FALSE]
     } else file.mtime(path)
     t = t1[[path]]; t1[[path]] <<- t2
-    !is.null(t) && !identical(t2, t)
+    !is.null(t) && !(is.null(dim(t2)) && is.na(t2)) && !identical(t2, t)
   }
 
-  xfun::new_app('litedown', function(path, query, post, headers) {
+  new_app('litedown', function(path, query, post, headers) {
     # set up proper default options for mark()
     opt = options(
       litedown.html.meta = list(
@@ -49,9 +49,10 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
     # plain-text error page, which may be hard to understand
     opts = reactor(error = TRUE); on.exit(reactor(opts), add = TRUE)
     query = as.list(query)
+    ext = tolower(file_ext(path))
     # we keep POSTing to the page assets' URLs, and if an asset file has been
     # modified, we return a response telling the browser to update it
-    type = if (length(headers)) xfun::grep_sub(
+    type = if (length(headers)) grep_sub(
       '.*\nlitedown-data: ([^[:space:]]+).*', '\\1', rawToChar(headers)
     )
     if (length(type) != 1) type = ''
@@ -65,9 +66,11 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
       )
       return(list(payload = 'done'))
     }
+    # create a new file with selected features
+    if (grepl('^new($|:)', type))
+      return(list(payload = if (type == 'new') feature_form(path) else new_file(path, ext, type)))
     # render Rmd in new R sessions and save to file
     if (type == 'save') {
-      ext = tolower(file_ext(path))
       return(if (is_lite_ext(ext)) {
         # check if the file is for a book or site
         info = proj_info(path)
@@ -109,6 +112,7 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
       if (type %in% c('asset', 'page')) {
         if (check_time(path)) resp = '1'
       } else if (grepl('^book:', type) && check_time(f <- sub('^book:', '', type))) {
+        store_book(dirname(path), f)
         # the book file path to preview is encoded in `type = book:foo/bar.Rmd`
         resp = fuse_book(c(dirname(path), f), 'html', globalenv())
       }
@@ -119,12 +123,17 @@ roam = function(dir = '.', live = TRUE, ...) in_dir(dir, {
     p = res$payload
     if (is.null(p) || (res[['content-type']] %||% 'text/html') != 'text/html')
       return(res)
-    res$payload = sub(
+    p = sub(
       '</head>', one_string(c(
         if (live) '<meta name="live-previewer" content="litedown::roam">',
-        gen_tags(asset_url(c('server.js', 'server.css'))), '</head>'
+        gen_tags(asset_url('server.css')), '</head>'
       )), p, fixed = TRUE
     )
+    p = sub(
+      '</body>', one_string(c(gen_tags(asset_url('server.js')), '</body>')), p,
+      fixed = TRUE
+    )
+    res$payload = p
     res
   }, ...)
 })
@@ -159,8 +168,8 @@ dir_page = function(dir = '.') {
       fenced_div(c(
         p_link(b, a = NULL), info(f, b, btn('.save', b)),
         p_link(b, '.run', 2, 'title="Run in memory"')
-      ), '.name'),
-      xfun::fenced_block(readLines(f, n = 10, encoding = 'UTF-8', warn = FALSE))
+      ), '.caption .name'),
+      fenced_block(readLines(f, n = 10, encoding = 'UTF-8', warn = FALSE))
     ), '.box')
   })
   files = files[!i1]
@@ -195,7 +204,7 @@ is_lite_ext = function(ext = file_ext(file), file) tolower(ext) %in% lite_exts
 # render the path to HTML if possible
 file_resp = function(x, preview) {
   raw = preview == '0'  # 0: send raw response; 1: render verbatim; 2: fuse()/mark()
-  ext = if (raw) '' else tolower(xfun::file_ext(x))
+  ext = if (raw) '' else tolower(file_ext(x))
   if (preview == '2' && is_lite_ext(ext)) {
     # to clean up the __files/ dir if requested (via options()) and the dir
     # didn't exist before
@@ -209,14 +218,17 @@ file_resp = function(x, preview) {
     info = proj_info(x)
     list(payload = switch(
       info$type,
-      book = fuse_book(if (info$index) info$root else x, full_output, globalenv()),
+      book = {
+        store_book(info$root, x)
+        fuse_book(if (info$index) info$root else x, full_output, globalenv())
+      },
       site = fuse_site(x),
       if (ext == 'md') mark_full(x) else fuse(x, full_output, envir = globalenv())
     ))
   } else {
-    type = xfun::mime_type(x)
+    type = mime_type(x)
     if (!raw && is_text_file(ext, type) &&
-        !inherits(txt <- xfun::try_silent(read_utf8(x, error = TRUE)), 'try-error')) {
+        !inherits(txt <- try_silent(read_utf8(x, error = TRUE)), 'try-error')) {
       list(payload = mark_full(
         fenced_block(txt, lineno_attr(if (ext == '') 'plain' else ext))
       ))
@@ -226,10 +238,17 @@ file_resp = function(x, preview) {
   }
 }
 
+# store book dir for books to resolve number_refs() because the book may be
+# partially rendered (in which case we can't resolve refs to other chapters)
+store_book = function(dir, x) {
+  .env$current_book = dir; .env$current_file = x
+  exit_call(function() .env$current_book <- .env$current_file <- NULL)
+}
+
 # detect project type for a directory (_litedown.yml may be in an upper-level dir)
 proj_info = function(x, d = dirname(x)) {
   while (length(yaml <- yml_config(d)) == 0) {
-    if (xfun::same_path(d, d2 <- file.path(d, '..'))) break
+    if (same_path(d, d2 <- file.path(d, '..'))) break
     d = d2
   }
   # use the field 'type' if provided, otherwise look for 'book' or 'site'
@@ -243,7 +262,7 @@ proj_info = function(x, d = dirname(x)) {
   }
   list(
     type = type, root = root, yaml = yaml,
-    index = !is.na(root) && is_index(x) && xfun::same_path(x, file.path(root, basename(x)))
+    index = !is.na(root) && is_index(x) && same_path(x, file.path(root, basename(x)))
   )
 }
 
@@ -252,14 +271,14 @@ full_output = structure('html', full = TRUE)
 mark_full = function(...) mark(..., output = full_output)
 
 # guess if a file is a text file
-is_text_file = function(ext = file_ext(file), type = xfun:::guess_type(file), file) {
+is_text_file = function(ext = file_ext(file), type = mime_type(file), file) {
   (ext %in% c('js', 'latex', 'qmd', 'tex', 'xml') || grepl('^text/', type))
 }
 
 is_roaming = function() isTRUE(getOption('litedown.roaming'))
 
 # return a raw file response
-file_raw = function(x, type = xfun:::guess_type(x)) {
+file_raw = function(x, type = mime_type(x)) {
   list(file = normalizePath(x), `content-type` = type)
 }
 
@@ -293,3 +312,24 @@ btn = function(t, u = '#', a = character()) {
 }
 
 .icons = c(.open = '&#9998;', .run = '&#9205;', .save = '&#8623;')
+
+new_file = function(path, ext, type, css = NULL, js = NULL) {
+  if (file.exists(path)) return(sprintf("The file '%s' already exists.", path))
+  on.exit(xfun:::open_path(path), add = TRUE)
+  if (!is_lite_ext(ext)) return(tolower(file.create(path)))
+  features = strsplit(sub('^new:', '', type), ',')[[1]]
+  a = assets[features, , drop = FALSE]
+  m = list(
+    title = 'Comfortably Untitled',
+    author = tools::toTitleCase(Sys.getenv('USERNAME', Sys.getenv('USER'))),
+    date = format(Sys.Date())
+  )
+  if (nrow(a)) m$output$html = list(meta = list(
+    css = I(na_omit(a[, 'css'])), js = I(na_omit(a[, 'js']))
+  ))
+  taml_save = getFromNamespace('taml_save', 'xfun')  # TODO: remove this hack
+  txt = c('---', taml_save(m), '---', '', 'Relax. I need some information first.')
+  if (ext == 'r') txt = paste("#'", split_lines(txt))
+  write_utf8(txt, path)
+  'view'
+}

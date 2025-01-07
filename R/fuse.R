@@ -137,7 +137,7 @@ crack = function(input, text = NULL) {
       }
       code = code[-c(1, N)]  # remove fences
       save_pos(b$lines)
-      code = xfun::divide_chunk(b$info, code)
+      code = divide_chunk(b$info, code)
       b[c('source', 'options', 'comments')] = code[c('code', 'options', 'src')]
       # starting line number of code
       b$code_start = b$lines[1] + 1L + length(b$comments)
@@ -163,19 +163,23 @@ crack = function(input, text = NULL) {
       x2[N] = gsub('^`+', '', x2[N])  # leading ` of last
       # ` at both ends for text in the middle
       if (N > 2) x2[2:(N - 1)] = gsub('^`+|`+$', '', x2[2:(N - 1)])
+      # see if the code is wrapped in $ $
+      d1 = substring(x2, nchar(x2), nchar(x2)) == '$'
+      d2 = substring(x2, 1, 1) == '$'
+      dollar = d1[-N] & d2[-1]
       # position of code c(row1, col1, row2, col2)
       pos = matrix(b$pos, nrow = 4)
-      x = head(c(rbind(x2, c(x1, ''))), -1)
-      x = lapply(seq_along(x), function(i) {
-        z = x[i]
-        if (i %% 2 == 1) return(z)
-        z = match_one(z, rx_inline)[[1]][-1]
-        p2 = pos[, i / 2]; save_pos(p2)
-        list(
+      x = as.list(head(c(rbind(x2, c(x1, ''))), -1))
+      for (i in seq_len(N - 1)) {
+        z = match_one(x1[i], rx_inline)[[1]][-1]
+        p2 = pos[, i]; save_pos(p2)
+        xi = list(
           source = z[2], pos = p2,
           options = csv_options(gsub('^([^,]+)', 'engine="\\1"', z[1]))
         )
-      })
+        if (dollar[i]) xi$math = TRUE
+        x[[2 * i]] = xi
+      }
       b$source = x
     } else {
       b$source = paste(b$source, collapse = '\n')
@@ -192,7 +196,7 @@ crack = function(input, text = NULL) {
 set_error_handler = function(input) {
   opts = options(xfun.handle_error.loc_fun = get_loc)
   oenv = as.list(.env)
-  xfun::exit_call(function() { options(opts); reset_env(oenv, .env) })
+  exit_call(function() { options(opts); reset_env(oenv, .env) })
   .env$input = input  # store the input name for get_loc()
 }
 
@@ -235,7 +239,7 @@ char_pos = function(x, p) {
 sieve = function(input, text = NULL) {
   text = read_input(input, text); input = attr(text, 'input')
   n = length(text)
-  r = run_range(grepl("^#'( .+| *)$", text), xfun::is_blank(text))
+  r = run_range(grepl("^#'( .+| *)$", text), is_blank(text))
   nc = ncol(r)
 
   # no #' or #|: split code into smallest expressions
@@ -258,7 +262,7 @@ sieve = function(input, text = NULL) {
     if (type == 'text_block') {
       el = list(source = one_string(sub("^#' ?", '', x)))
     } else {
-      if (all(i <- xfun::is_blank(x))) return()
+      if (all(i <- is_blank(x))) return()
       # trim blank lines at both ends
       i2 = range(which(!i))  # first and last non-empty lines
       l1 = l1 + (i2[1] - 1)
@@ -266,7 +270,7 @@ sieve = function(input, text = NULL) {
       save_pos(c(l1, l2))
       x = text[l1:l2]
       el = if (pipe) partition(x) else list(source = x)
-      el$code_start = l1 + length(el$comments)
+      el$code_start = as.integer(l1) + length(el$comments)
       el$options$engine = 'r'
     }
     el$type = type
@@ -274,7 +278,7 @@ sieve = function(input, text = NULL) {
     res[[length(res) + 1]] <<- el
   }
   partition = function(code) {
-    code = xfun::divide_chunk('r', code)
+    code = divide_chunk('r', code)
     set_names(code[c('code', 'options', 'src')], c('source', 'options', 'comments'))
   }
   # detect #| and split a block of code into chunks
@@ -354,32 +358,37 @@ link_pos = function() {
   sprintf('line = %d:col = %d', l[1], if (length(l) == 4) l[2] else 1)
 }
 
-# get the execution order of code/text blocks via the `order` option (higher
-# values indicate higher priority)
-block_order = function(res) {
-  check = function(b) {
-    if (is.null(o <- b$options[['order']])) return(o)
-    if (is_lang(o)) o = eval(o, fuse_env())
-    if (length(o) == 1) return(o)
+# get the execution order of code/text blocks via the `order` option (lower
+# values indicate earlier execution)
+block_order = function(res, N = length(res)) {
+  check = function(b, env) {
+    if (is.null(o <- b$options[['order']])) return(NA)
+    if (is_lang(o)) o = eval(o, env)
+    if (length(o) == 1 && is.numeric(o)) return(o)
     save_pos(b$pos %||% b$lines)
-    stop("The chunk option 'order' must be either NULL or of length 1.", call. = FALSE)
+    stop("The chunk option 'order' must be either NULL or a number.", call. = FALSE)
   }
-  x = lapply(res, function(b) {
-    if (b$type == 'code_chunk') return(check(b) %||% 0)
-    if (!is.list(b$source)) return(0)
-    for (s in b$source)
-      if (is.list(s) && !is.null(o <- check(s))) return(o)
-    0
-  })
-  order(unlist(x), decreasing = TRUE)
+  x = seq_len(N); e = new.env(parent = fuse_env()); e$N = N
+  for (i in x) {
+    b = res[[i]]; e$i = i
+    if (b$type == 'code_chunk') {
+      if (!is.na(o <- check(b, e))) x[i] = o
+    } else if (is.list(b$source)) {
+      # use the first found `order` option in all inline expressions
+      for (s in b$source) if (is.list(s) && !is.na(o <- check(s, e))) {
+        x[i] = o; break
+      }
+    }
+  }
+  order(x)
 }
 
 #' @description The function `fuse()` extracts and runs code from code chunks
 #'   and inline code expressions in R Markdown, and interweaves the results with
-#'   the rest of text in the input, which is similar to what [knitr::knit()] and
-#'   [rmarkdown::render()] do. It also works on R scripts in a way similar to
-#'   [knitr::spin()]. The function `fiss()` extracts code from the input, and is
-#'   similar to [knitr::purl()].
+#'   the rest of text in the input, which is similar to what `knitr::knit()` and
+#'   `rmarkdown::render()` do. It also works on R scripts in a way similar to
+#'   `knitr::spin()`. The function `fiss()` extracts code from the input, and is
+#'   similar to `knitr::purl()`.
 #' @rdname mark
 #' @param envir An environment in which the code is to be evaluated. It can be
 #'   accessed via [fuse_env()] inside [fuse()].
@@ -414,7 +423,7 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
 
   opts = reactor()
   # clean up the figure folder on exit if it's empty
-  on.exit(xfun::del_empty_dir({
+  on.exit(del_empty_dir({
     if (dir.exists(fig.dir <- opts$fig.path)) fig.dir else dirname(fig.dir)
   }), add = TRUE)
 
@@ -445,7 +454,7 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
     if (is.null(p <- opts[[name]])) p = aux_path(output_base %||% 'litedown', name)
     slash = endsWith(p, '/')
     # make sure path is absolute so it will be immune to setwd() (in code chunks)
-    if (xfun::is_rel_path(p)) {
+    if (is_rel_path(p)) {
       p = file.path(getwd(), p)
       # preserve trailing slash because file.path() removes it on Windows
       if (slash) p = sub('/*$', '/', p)
@@ -533,7 +542,7 @@ fiss = function(input, output = '.R', text = NULL) {
   on.exit({ options(opt); on_error() }, add = TRUE)
 
   # the chunk option `order` determines the execution order of chunks
-  o = block_order(blocks)
+  o = block_order(blocks, n)
   res = character(n)
   for (i in seq_len(n)) {
     k = o[i]; b = blocks[[k]]; save_pos(b$lines)
@@ -642,19 +651,21 @@ fuse_code = function(x, blocks) {
   opts = reactor()
 
   # delayed assignment to evaluate a chunk option only when it is actually used
-  lapply(names(opts), function(i) {
-    if (is_lang(o <- opts[[i]])) delayedAssign(i, eval(o, fuse_env()), environment(), opts)
+  lapply(setdiff(names(opts), 'order'), function(i) {
+    # skip the `order` option since it needs to be eval()ed in block_order()
+    if (i != 'order' && is_lang(o <- opts[[i]]))
+      delayedAssign(i, eval(o, fuse_env()), environment(), opts)
   })
   # set the working directory before evaluating anything else
-  if (is.character(opts$wd)) {
-    owd = setwd(opts$wd); on.exit(setwd(owd), add = TRUE)
-  }
+  change_wd(opts$wd)
 
   # fuse child documents (empty the `child` option to avoid infinite recursion)
   if (length(opts$child)) return(uapply(reactor(child = NULL)$child, function(.) {
     child = .env$child; .env$child = TRUE; on.exit(.env$child <- child)
     fuse(., output = 'markdown', envir = fuse_env(), quiet = TRUE)
   }))
+
+  lab = opts$label; lang = opts$engine
 
   # the source code could be from these chunk options: file, code, or ref.label
   test_source = function(name) {
@@ -669,23 +680,29 @@ fuse_code = function(x, blocks) {
     x$source = read_all(opts$file)
   } else if (test_source('code')) {
     x$source = opts$code
-  } else if (test_source('ref.label')) {
-    x$source = uapply(blocks[opts$ref.label], `[[`, 'source')
+  } else {
+    labs = if (test_source('ref.label')) opts$ref.label else {
+      # use code from other chunks of the same label
+      if (length(x$source) == 0) which(names(blocks) == lab)
+    }
+    if (length(labs)) x$source = uapply(blocks[labs], `[[`, 'source')
   }
 
-  lab = opts$label
-  lang = opts$engine
-  res = if (isFALSE(opts$eval)) {
-    len_src = length(x$source)
-    list(structure(new_source(x$source), lines = if (len_src) c(1L, len_src) else c(0L, 0L)))
-  } else {
+  res = if (isFALSE(opts$eval)) list(new_source(x$source)) else {
     if (is.function(eng <- engines(lang))) eng(x) else list(
       new_source(x$source),
-      new_warning(sprintf("The engine '%s' is not supported yet.", lang))
+      new_warning(sprintf("The engine '%s' is not supported.", lang))
     )
   }
 
   if (!opts$include) return('')
+
+  # if the engine result contains new chunk options, apply the new options, and
+  # make sure they will be properly restored via `old` on exit
+  if (length(opts_new <- attr(res, 'options'))) {
+    old2 = reactor(opts_new)
+    for (i in setdiff(names(old2), names(old))) old[i] = old2[i]
+  }
 
   # decide the number of backticks to wrap up output
   fence = xfun::make_fence(c(unlist(res), x$fences))
@@ -699,7 +716,7 @@ fuse_code = function(x, blocks) {
   p3 = unlist(p2)  # vector of plot paths
   # get the relative path of the plot directory
   fig.dir = if (length(p3)) tryCatch(
-    sub('^[.]/', '.', paste0(dirname(xfun::relative_path(p3[1], .env$wd.out)), '/')),
+    sub('^[.]/', '.', paste0(dirname(relative_path(p3[1], .env$wd.out)), '/')),
     error = function(e) NULL
   )
 
@@ -722,19 +739,23 @@ fuse_code = function(x, blocks) {
   if (pn && length(cap)) res = c(xfun:::merge_record(p1), list(new_plot(p3)))
   i = 0  # plot counter
 
+  res_show = opts$results  # normalize the 'results' option
+  if (is.logical(res_show)) res_show = if (res_show) 'markup' else 'hide'
+
   l1 = x$code_start  # starting line number of the whole code chunk
   # generate markdown output
   out = lapply(res, function(x) {
-    type = sub('record_', '', class(x)[1])
+    type = grep_sub('^record_', '', class(x))[1]
+    if (is.na(type)) type = 'output'
     if (type == 'source') {
       if (!opts$echo) return()
       l2 = attr(x, 'lines')[1]  # starting line number of a code block
       x = one_string(x)
-      if (opts$strip.white) x = str_trim(x)
+      if (opts$strip.white) x = trim_blank(x)
     }
     asis = if (type %in% c('output', 'asis')) {
-      if (opts$results == 'hide') return()
-      any(c(opts$results, type) == 'asis')
+      if (res_show == 'hide') return()
+      any(c(res_show, type) == 'asis')
     } else FALSE
     if (type == 'warning' && !isTRUE(opts$warning)) return()
     if (type == 'message' && !isTRUE(opts$message)) return()
@@ -764,6 +785,24 @@ fuse_code = function(x, blocks) {
       } else fenced_block(x, a, fence)
     }
   })
+
+  # collapse a code block without attributes into previous adjacent code block
+  if (isTRUE(opts$collapse) && (n <- length(res)) > 1) {
+    i1 = 1; k = NULL  # indices of elements to be removed from `out`
+    for (i in 2:n) {
+      if (i - i1 > 1) i1 = i - 1  # make sure blocks are adjacent
+      o1 = out[[i1]]; n1 = length(o1); e1 = o1[n1]
+      # previous block should have a closing fence ```+
+      if (n1 < 3 || !grepl('^```+$', e1)) next
+      o2 = out[[i]]
+      if (continue_block(o1[2], e1, head(o2, 2))) {
+        out[[i]] = c(o1[-n1], o2[-(1:2)])
+        k = c(k, i1)  # merge previous block into current and remove previous
+      }
+    }
+    if (length(k)) out = out[-k]
+  }
+
   a = opts$attr.chunk
   if (length(x$fences) == 2) {
     # add a class name to the chunk output so we can style it differently
@@ -772,14 +811,25 @@ fuse_code = function(x, blocks) {
   }
   out = unlist(out)
   if (!is.null(a)) out = fenced_div(out, a)
+  # if first line of chunk output is empty, remove it (the chunk should have had
+  # an empty line before it in the source)
+  if (length(out) && out[1] == '') out = out[-1]
+  # add prefix (possibly indentation and > quote chars)
   if (!is.null(x$prefix)) out = gsub('^|(?<=\n)', x$prefix, out, perl = TRUE)
   out
+}
+
+# temporarily change the working directory inside a function call
+change_wd = function(dir) {
+  if (is.character(dir)) {
+    owd = setwd(dir); exit_call(function() setwd(owd))
+  }
 }
 
 # add caption to an element (e.g., figure/table)
 add_cap = function(x, cap, lab, pos, env, type = 'fig') {
   if (length(cap) == 0 || length(lab) == 0) return(x)
-  cap = fenced_div(add_ref(lab, type, cap), sprintf('.%s-caption', type))
+  cap = fenced_div(add_ref(lab, type, cap), '.caption')
   pos = pos %||% 'bottom'
   x = if (pos == 'top') c(cap, '', x) else c(x, '', cap)
   fenced_div(x, c(sub('^[.]?', '.', env), sprintf('#%s:%s', type, lab)))
@@ -788,7 +838,9 @@ add_cap = function(x, cap, lab, pos, env, type = 'fig') {
 # if original chunk header contains multiple curly braces (e.g., ```{{lang}}),
 # include chunk fences in the output (and also pipe comments if exist)
 add_fences = function(out, x, fence) {
-  fences = list(c(x$fences[1], x$comments), x$fences[2])
+  # remove last line of pipe comments if empty
+  if ((n <- length(o <- x$comments)) > 1 && o[n] == '') o = o[-n]
+  fences = list(c(x$fences[1], o), x$fences[2])
   append(lapply(fences, fenced_block, c('.md', '.code-fence'), fence), out, 1)
 }
 
@@ -798,10 +850,26 @@ lineno_attr = function(lang = NA, start = 1, auto = TRUE) c(
   '.line-numbers', if (auto) '.auto-numbers', sprintf('data-start="%d"', start)
 )
 
-new_source = function(x) xfun::new_record(x, 'source')
-new_warning = function(x) xfun::new_record(x, 'warning')
-new_plot = function(x) xfun::new_record(x, 'plot')
-new_asis = function(x) xfun::new_record(x, 'asis')
+# two blocks are continuous if first 2 elements of next block are '' and
+# previous block's closing or opening fence (after removing data-start attribute)
+continue_block = function(e1_open, e1_end, e2) {
+  if (length(e2) != 2 || e2[1] != '') return(FALSE)
+  if ((e2_open <- e2[2]) == e1_end) return(TRUE)
+  e3 = sub(' data-start="[0-9]+"', '', c(e1_open, e2_open))
+  e3[1] == e3[2]
+}
+
+new_source = function(x) {
+  len = length(x)
+  structure(new_record(x, 'source'), lines = if (len) c(1L, len) else c(0L, 0L))
+}
+new_output = function(x) new_record(x, 'output')
+new_warning = function(x) new_record(x, 'warning')
+new_plot = function(x) new_record(x, 'plot')
+new_asis = function(x, raw = FALSE) {
+  res = new_record(x, 'asis')
+  if (raw) raw_string(res) else res
+}
 
 is_plot = function(x) inherits(x, 'record_plot')
 
@@ -816,30 +884,39 @@ fuse_text = function(x) {
 exec_inline = function(x) {
   save_pos(x$pos)
   o = reactor(x$options); on.exit(reactor(o), add = TRUE)
-  if (isFALSE(reactor('eval'))) return('')
+  opts = reactor()
+  if (isFALSE(opts$eval)) return('')
+  change_wd(opts$wd)
   lang = x$options$engine
-  if (is.function(eng <- engines(lang))) eng(x, inline = TRUE) else {
-    warning("The inline engine '", lang, "' is not supported yet")
+  if (is.function(eng <- engines(lang))) {
+    one_string(eng(x, inline = TRUE))
+  } else {
+    warning("The inline engine '", lang, "' is not supported.")
     sprintf('`{%s} %s`', lang, x$source)
   }
 }
 
-fmt_inline = function(x) {
-  if (is.numeric(x) && length(x) == 1 && !inherits(x, 'AsIs')) sci_num(x) else as.character(x)
+fmt_inline = function(x, ...) {
+  if (is.numeric(x) && length(x) == 1 && !inherits(x, 'AsIs'))
+    sci_num(x, ...) else as.character(x)
 }
 
 # change scientific notation to LaTeX math
-sci_num = function(x) {
-  s = getOption('litedown.inline.signif', 3)
-  p = getOption('litedown.inline.power', 6)
+sci_num = function(x, math = NULL) {
+  opts = reactor()
+  s = x != 0 && abs(log10(abs(x))) >= opts$power
+  x = format(signif(x, opts$signif), scientific = s)
   r = '^(-)?([0-9.]+)e([-+])0*([0-9]+)$'
-  x = format(signif(x, s), scientific = x != 0 && abs(log10(abs(x))) >= p)
-  if (!grepl(r, x)) return(x)
-  n = match_one(x, r)[[1]]
-  sprintf(
-    '%s%s10^{%s%s}', n[2], if (n[3] == '1') '' else paste(n[3], '\\times '),
-    if (n[4] == '+') '' else n[4], n[5]
-  )
+  s = grepl(r, x)
+  if (s) {
+    n = match_one(x, r)[[1]]
+    x = sprintf(
+      '%s%s10^{%s%s}', n[2], if (n[3] == '1') '' else paste(n[3], '\\times '),
+      if (n[4] == '+') '' else n[4], n[5]
+    )
+  }
+  if (is.na(d <- opts$dollar)) d = s && !isTRUE(math)
+  if (d) paste0('$', x, '$') else x
 }
 
 # similar to the base R options() interface but for litedown options / engines /
@@ -915,48 +992,48 @@ new_opts = function() {
 #' ls(opts)  # built-in options
 reactor = new_opts()
 reactor(
-  eval = TRUE, echo = TRUE, results = 'markup', comment = '#> ',
+  eval = TRUE, echo = TRUE, results = TRUE, comment = '#> ',
   warning = TRUE, message = TRUE, error = NA, include = TRUE,
-  strip.white = TRUE, order = 0,
+  strip.white = TRUE, collapse = FALSE, order = 0,
   attr.source = NULL, attr.output = NULL, attr.plot = NULL, attr.chunk = NULL,
   attr.message = '.plain .message', attr.warning = '.plain .warning', attr.error = '.plain .error',
   cache = FALSE, cache.path = NULL,
   dev = NULL, dev.args = NULL, fig.path = NULL, fig.ext = NULL,
-  fig.width = 7, fig.height = 7, fig.cap = NULL, fig.alt = NULL, fig.env = '.figure',
+  fig.width = 7, fig.height = 7, fig.dim = NULL, fig.cap = NULL, fig.alt = NULL, fig.env = '.figure',
   tab.cap = NULL, tab.env = '.table', cap.pos = NULL,
   print = NULL, print.args = NULL, time = FALSE,
   code = NULL, file = NULL, ref.label = NULL, child = NULL, purl = TRUE,
-  wd = NULL
+  wd = NULL,
+  signif = 3, power = 6, dollar = NA
 )
 
 # the R engine
 eng_r = function(x, inline = FALSE, ...) {
   opts = reactor()
   if (inline) {
-    expr = xfun::parse_only(x$source)
+    expr = parse_only(x$source)
     res = if (is.na(opts$error)) eval(expr, fuse_env()) else tryCatch(
       eval(expr, fuse_env()), error = function(e) if (opts$error) e$message else ''
     )
-    return(fmt_inline(res))
+    return(fmt_inline(res, x$math))
   }
   args = reactor(
     'fig.path', 'fig.ext', 'dev', 'dev.args', 'message', 'warning', 'error',
-    'cache', 'print', 'print.args'
+    'cache', 'print', 'print.args', 'verbose'
   )
   if (is.character(args$fig.path)) args$fig.path = paste0(args$fig.path, opts$label)
+  size = list(width = opts$fig.width, height = opts$fig.height)
+  # if fig.dim is provided, override fig.width and fig.height
+  if (length(dm <- opts$fig.dim) == 2) size[] = as.list(dm)
   # map chunk options to record() argument names
   names(args)[1:2] = c('dev.path', 'dev.ext')
   args = dropNULL(args)
-  args$dev.args = merge_list(
-    list(width = opts$fig.width, height = opts$fig.height), opts$dev.args
-  )
+  args$dev.args = merge_list(size, opts$dev.args)
   args$cache = list(
     path = if (args$cache) opts$cache.path, vars = opts$cache.vars,
     hash = opts$cache.hash, extra = opts$cache.extra, keep = opts$cache.keep,
     id = opts$label, rw = opts$cache.rw
   )
-  # support eval = 1, 2, 3 (pass to the 'verbose' argument of record())
-  if (is.numeric(opts$eval)) args$verbose = opts$eval - 1
   do.call(xfun::record, c(list(code = x$source, envir = fuse_env()), args))
 }
 
@@ -978,6 +1055,25 @@ eng_mermaid = function(x, inline = FALSE, ...) {
   if (inline) one_string(c(code, '')) else {
     list(new_source(src), new_asis(code))
   }
+}
+
+# embed a file verbatim
+eng_embed = function(x, ...) {
+  s = x$source; opts = reactor()
+  # if chunk option `file` is empty, use source code as the list of files
+  if (is.null(f <- opts$file)) {
+    f = gsub('^["\']|["\']$', '', s)  # in case paths are quoted
+    if (length(f) == 0) return()
+    s = read_all(f)
+  }
+  opts_new = list(comment = NULL)  # don't comment out file content
+  # use the filename extension as the default language name
+  if (is.null(opts$attr.output) && nchar(lang <- file_ext(f[1])) > 1) {
+    lang = sub('^R', '', lang)  # Rmd -> md, Rhtml -> html, etc.
+    if (lang == 'nw') lang = 'tex'
+    opts_new$attr.output = paste0('.', lang)
+  }
+  structure(list(new_output(s)), options = opts_new)
 }
 
 #' Language engines
@@ -1003,7 +1099,7 @@ eng_mermaid = function(x, inline = FALSE, ...) {
 #' litedown::engines()  # built-in engines
 engines = new_opts()
 engines(
-  r = eng_r, md = eng_md, mermaid = eng_mermaid,
+  r = eng_r, md = eng_md, mermaid = eng_mermaid, embed = eng_embed,
   css = function(x, ...) eng_html(x, '<style type="text/css">', '</style>', ...),
   js = function(x, ...) eng_html(x, '<script>', '</script>', ...)
 )

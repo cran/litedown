@@ -8,13 +8,13 @@
 #' Markdown file can provide its own `output` field in YAML to override the
 #' global config). For example:
 #'
-#' ```
+#' ```yaml
 #' ---
 #' site:
 #'   rebuild: "outdated"
 #'   pattern: "[.]R?md$"
 #' output:
-#'   litedown::html_format:
+#'   html:
 #'     meta:
 #'       css: ["@default"]
 #'       include_before: "[Home](/) [About](/about.html)"
@@ -42,6 +42,7 @@ fuse_site = function(input = '.') {
     preview = is_roaming() && length(input) == 1
     input
   }
+  root = info$root
   output = with_ext(inputs, '.html')
   cfg = merge_list(list(rebuild = 'outdated'), info$yaml[['site']])
   b = cfg[['rebuild']]
@@ -51,8 +52,8 @@ fuse_site = function(input = '.') {
   }
   opts = yaml_field(info$yaml, 'html', c('meta', 'options'))
   opts[['meta']] = merge_list(list(
-    css = c("@default", "@article", '@site'),
-    js = c("@sidenotes", "@appendix", "@toc-highlight"),
+    css = c("@default", "@article", '@site', "@copy-button", "@heading-anchor"),
+    js = c("@sidenotes", "@appendix", "@toc-highlight", "@copy-button", "@heading-anchor"),
     include_before = nav_menu(info), include_after = format(Sys.Date(), '&copy; %Y')
   ), opts[['meta']])
   opts[['options']] = merge_list(
@@ -60,21 +61,21 @@ fuse_site = function(input = '.') {
   )
   out = lapply(inputs[i], function(x) {
     res = if (grepl('[.]md$', x)) {
-      opts = set_site_options(opts, x); on.exit(options(opts))
+      opts = set_site_options(opts, x, root); on.exit(options(opts))
       mark(x, full_output)
     } else {
       Rscript_call(
-        function(x, opts, set, flag, output) {
-          set(opts, x, list(litedown.roaming = flag))
+        function(x, opts, set, root, flag, output) {
+          set(opts, x, root, list(litedown.roaming = flag))
           litedown::fuse(x, output, envir = globalenv())
         },
-        list(x, opts, set_site_options, is_roaming(), full_output),
+        list(x, opts, set_site_options, root, is_roaming(), full_output),
         fail = paste('Failed to run litedown::fuse() on', x)
       )
     }
     # resolve / to relative paths
     if (!is.na(info$root)) {
-      up = xfun::relative_path(info$root, dirname(x))
+      up = relative_path(info$root, dirname(x))
       if (up == '.') up = ''
       res = match_replace(res, ' (href|src)(=")/', function(z) {
         gsub('/$', up, z)
@@ -88,12 +89,12 @@ fuse_site = function(input = '.') {
 }
 
 # set global options litedown.html.[meta|options] read from _litedown.yml
-set_site_options = function(opts, input, extra = NULL) {
+set_site_options = function(opts, input, root, extra = NULL) {
   m = opts[['meta']]
   for (i in c('include_before', 'include_after')) {
     if (!is.character(m[[i]])) next
     tag = if (i == 'include_before') 'nav' else 'footer'
-    x = mark(I(one_string(m[[i]], test = TRUE)))
+    x = mark(I(one_string(m[[i]], test = c(dirname(input), root))))
     x = sprintf('<%s>%s</%s>', tag, x, tag)
     m[[i]] = sub_vars(x, list(input = I(input)))
   }
@@ -124,25 +125,24 @@ nav_menu = function(info) {
 #' `bookdown::render_book()`, but one major differences is that all HTML output
 #' is written to one file, instead of one HTML file per chapter.
 #'
-#' If the output format ([html_format()] or [latex_format()]) needs to be
-#' customized, the settings should be written in the config file
-#' `_litedown.yml`, e.g.,
+#' If the output format needs to be customized, the settings should be written
+#' in the config file `_litedown.yml`, e.g.,
 #'
-#' ```
+#' ```yaml
 #' ---
 #' output:
-#'   litedown::html_format:
+#'   html:
 #'     options:
 #'       toc:
 #'         depth: 4
-#'   litedown::latex_format:
+#'   latex:
 #'     meta:
 #'       documentclass: "book"
 #' ```
 #'
 #' In addition, you can configure the book via the `book` field, e.g.,
 #'
-#' ```
+#' ```yaml
 #' ---
 #' book:
 #'   new_session: true
@@ -177,11 +177,6 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
   # only preview file1, file2, ...
   if (dir.exists(input[1])) {
     preview = input[-1]; input = input[1]
-    # in roaming mode, need to store cross-refs because the book may be
-    # partially rendered (in which case we can't resolve refs to other chapters)
-    if (is_roaming()) {
-      .env$current_book = input; on.exit(.env$current_book <- NULL, add = TRUE)
-    }
   } else preview = NULL
 
   yaml = NULL
@@ -212,17 +207,17 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
   # inherited in new R sessions, so we attach the timing path to R_LITEDOWN_TIME
   if (is.character(p <- cfg$time)) {
     # treat relative path as a path relative to the first input's cache dir
-    if (xfun::is_rel_path(p))
+    if (is_rel_path(p))
       p = file.path(paste0(sans_ext(normalize_path(input[1])), '__cache'), p)
-    vars = xfun::set_envvar(c(R_LITEDOWN_TIME = p))
-    on.exit(xfun::set_envvar(vars), add = TRUE)
+    vars = set_envvar(c(R_LITEDOWN_TIME = p))
+    on.exit(set_envvar(vars), add = TRUE)
     if (file_exists(p)) {
       # filter out data from input files that do not belong to the book
       d = readRDS(p)
       if (!all(i <- d$source %in% input)) {
         d = d[i, ]; saveRDS(d, p)
       }
-    } else xfun::dir_create(dirname(p))
+    } else dir_create(dirname(p))
   }
 
   res = lapply(preview %|% input, function(x) {
@@ -235,7 +230,7 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
       }
     }
     # remove YAML in the preview mode since we only need the body
-    if (length(preview)) out = xfun::yaml_body(split_lines(out))$body
+    if (length(preview)) out = yaml_body(split_lines(out))$body  # TODO: use parse = FALSE
 
     if (format != 'html') return(out)
     # add input filenames to the end for HTML output and wrap each file in a div
@@ -257,8 +252,9 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
     )
   })
   tweak_options(format, yaml, list(
-    body_class = '', css = c("@default", "@article", "@book"),
-    js = c("@sidenotes", "@appendix", "@toc-highlight")
+    body_class = '',
+    css = c("@default", "@article", "@book", "@copy-button", "@heading-anchor"),
+    js = c("@sidenotes", "@appendix", "@toc-highlight", "@copy-button", "@heading-anchor")
   ), toc = length(preview) == 0)
   fuse_output(input[1], output, unlist(res), full)
 }
@@ -266,7 +262,7 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
 # read the config file _litedown.yml
 yml_config = function(d) {
   if (file_exists(cfg <- file.path(d, '_litedown.yml')))
-    xfun::yaml_load(read_utf8(cfg))
+    xfun::yaml_load(read_utf8(cfg), use_yaml = FALSE)
 }
 
 site_pattern = '[.][Rq]?md$'
@@ -311,5 +307,5 @@ tweak_options = function(format, yaml, meta = NULL, toc = TRUE, options = NULL) 
   )
   names(defaults) = nms
   opts = options(defaults)
-  xfun::exit_call(function() options(opts))
+  exit_call(function() options(opts))
 }

@@ -1,3 +1,41 @@
+# CHANGES IN litedown VERSION 0.5
+
+- Added a wizard in `roam()` to create new `.Rmd`/`.md`/`.R` files with selected HTML features.
+
+- Added a new engine `embed` to embed text files via a code chunk.
+
+- Changed the meaning of the chunk option `order`: previously, higher values indicate earlier execution; now higher values indicate later execution. This is a breaking change, but the new meaning should feel more natural. For example, `order = i` means to execute the chunk in the i-th step, and `order = i - 1.5` means to move the chunk back 1.5 step in the queue so it will be executed earlier than its previous chunk. See https://yihui.org/litedown/#sec:option-order for details.
+
+- Shortened the output format names `litedown::html_format` to `html`, and `litedown::latex_format` to `latex`. The names `litedown::*` can still be used if you like.
+
+- Added options `dollar`, `signif`, and `power` to format numbers from inline code. See https://yihui.org/litedown/#sec:inline-code for details.
+
+- When embedding SVG images in HTML output, embed their raw XML content instead of base64 encoding them.
+
+- Empty table headers are removed in HTML output (they may be generated from data frames or matrices without column names).
+
+- Added support for the chunk option `collapse = TRUE` (thanks, @J-Moravec, #40).
+
+- Added support for the chunk option `fig.dim`, which is a shortcut for `fig.width` and `fig.height`.
+
+- Added a new function `vest()` as another way to add CSS/JS assets to HTML output.
+
+- Provided templates and a Github action `yihui/litedown/site` to build package websites. See https://yihui.org/litedown/#sec:pkg-site for details.
+
+- Added an argument `examples` to `pkg_manual()` to run examples and show their output (thanks, @TimTaylor, #54).
+
+- Fixed a bug that the default CSS wouldn't be added when a math expression exists on the page (thanks, @calvinw, #61).
+
+- Fixed a bug that cross-references to other chapters of a book could not be resolved when previewing a single chapter.
+
+- Fixed a bug that the file navigation by line numbers on code blocks stopped working in `litedown::roam()` due to yihui/lite.js@5e06d19.
+
+- Fixed a bug that `R` code blocks could not be embedded when using prism.js for syntax highlighting (thanks, @TimTaylor, #53).
+
+- `pkg_manual()` will point out the name of the problematic Rd file when the Rd file fails to convert to HTML (thanks, @BSchamberger).
+
+- Dropped **knitr** and **rmarkdown** from the `Suggests` field in `DESCRIPTION`. Previously, **litedown** allowed `rmarkdown::render()` to use the output formats `litedown::html_format` and `litedown::latex_format`. Now `rmarkdown::render()` is no longer supported, and `litedown::fuse()` must be used instead.
+
 # CHANGES IN litedown VERSION 0.4
 
 - Provided an option `options(litedown.roam.cleanup = TRUE)` to clean up the `*__files/` directory after previewing `.Rmd` or `.R` files via `litedown::roam()` (thanks, @TimTaylor, #36).
@@ -51,7 +89,7 @@
 
 - Changed the behavior of `.Rmd` and `.R` file links in the `litedown::roam()` interface: previously, clicking on an `.Rmd` or `.R` filename will execute them; now it will only show their content, because fully executing the code may be expensive or even dangerous (especially when the files were not authored by you). A new "Run" button has been provided in the interface, on which you can click on to run a file in memory and preview it (i.e., the old behavior of clicking on filenames). You should use this button only if you trust the file.
 
-- Added the JS asset [`@mathjax-config`](https://github.com/yihui/misc.js/blob/main/js/mathjax-config.js) to enable equation numbering by default when the JS math library is set to MathJax (thanks, @hturner, #32).
+- Added the JS asset [`@mathjax-config`](https://github.com/yihui/lite.js/blob/main/js/mathjax-config.js) to enable equation numbering by default when the JS math library is set to MathJax (thanks, @hturner, #32).
 
 - Set `options(bitmapType = 'cairo')` in `fuse()` if `capabilities('cairo')` is TRUE, which will generate smaller bitmap plot files (e.g., `.png`) than using `quartz` or `Xlib`, and is also a safer option for `fuse()` to be executed in parallel (rstudio/rmarkdown#2561).
 

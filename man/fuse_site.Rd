@@ -22,12 +22,12 @@ field \code{output} will be applied to all R Markdown files (an individual R
 Markdown file can provide its own \code{output} field in YAML to override the
 global config). For example:
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{---
+\if{html}{\out{<div class="sourceCode yaml">}}\preformatted{---
 site:
   rebuild: "outdated"
   pattern: "[.]R?md$"
 output:
-  litedown::html_format:
+  html:
     meta:
       css: ["@default"]
       include_before: "[Home](/) [About](/about.html)"

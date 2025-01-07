@@ -27,7 +27,7 @@ written to a file. If \code{output} is \code{NULL} or an extension, and the inpu
 a file path, the output file path will have the same base name as the input
 file, with an extension corresponding to the output format. The output
 format is retrieved from the first value in the \code{output} field of the YAML
-metadata of the \code{input} (e.g., \code{litedown::html_format} will generate HTML
+metadata of the \code{input} (e.g., \code{html} will generate HTML
 output). The \code{output} argument can also take an output format name
 (possible values are \code{html}, \code{latex}, \code{xml}, \code{man}, \code{commonmark}, and
 \code{text}). If no output format is detected or provided, the default is HTML.}
@@ -46,24 +46,23 @@ Markdown output to a single output file, which is similar to
 is written to one file, instead of one HTML file per chapter.
 }
 \details{
-If the output format (\code{\link[=html_format]{html_format()}} or \code{\link[=latex_format]{latex_format()}}) needs to be
-customized, the settings should be written in the config file
-\verb{_litedown.yml}, e.g.,
+If the output format needs to be customized, the settings should be written
+in the config file \verb{_litedown.yml}, e.g.,
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{---
+\if{html}{\out{<div class="sourceCode yaml">}}\preformatted{---
 output:
-  litedown::html_format:
+  html:
     options:
       toc:
         depth: 4
-  litedown::latex_format:
+  latex:
     meta:
       documentclass: "book"
 }\if{html}{\out{</div>}}
 
 In addition, you can configure the book via the \code{book} field, e.g.,
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{---
+\if{html}{\out{<div class="sourceCode yaml">}}\preformatted{---
 book:
   new_session: true
   subdir: false

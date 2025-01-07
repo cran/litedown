@@ -1,66 +1,52 @@
 is_rmd_preview = function() Sys.getenv('RMARKDOWN_PREVIEW_DIR') != ''
 
-output_format = function(to, options, meta, template, keep_md, ...) {
-  if (is_rmd_preview()) xfun::do_once(message(
-    "It appears that you clicked the 'Knit' button in RStudio to render the document, ",
-    "but perhaps should add a top-level field 'knit: litedown:::knit' to the YAML metadata, ",
+output_format = function(to, options, meta, ...) {
+  if (is_rmd_preview()) stop(
+    "It appears that you clicked the 'Knit' button in RStudio to render the document. ",
+    "You are recommended to use litedown::roam() to preview or render documents instead. ",
+    "Alternatively, you can add a top-level field 'knit: litedown:::knit' to the YAML metadata, ",
     "so the document can be rendered by litedown::fuse() instead of rmarkdown::render().",
-    "Alternatively, use litedown::roam() to preview or render documents.\n"
-  ), 'litedown.rmarkdown.reminder')
-  opts = rmarkdown::pandoc_options(to = to, ...)
-  opts$convert_fun = function(input, output, ...) {
-    mark(input, output, options, meta, text = NULL)
-  }
-  rmarkdown::output_format(
-    NULL, opts, keep_md = keep_md,
-    pre_processor = function(meta, input, runtime, knit_meta, ...) {
-      # knitr::knit_meta() has been emptied at this stage and only available in
-      # the `knit_meta` argument; make a copy in .env so that it can be accessed
-      # in add_html_deps() later
-      .env$knit_meta = knit_meta; NULL
-    },
-    on_exit = function() .env$knit_meta = NULL,
-    clean_supporting = 'local' %in% normalize_options(options)[['embed_resources']]
+    call. = FALSE
   )
+  msg = 'Please render the document via litedown::fuse() instead of rmarkdown::render().'
+  if ('pkgdown' %in% loadedNamespaces()) {
+    warning(
+      msg, '\n\nIf you intend to build a package website, you can also use litedown:',
+      ' https://yihui.org/litedown/#sec:pkg-site', call. = FALSE
+    )
+    ns = asNamespace('rmarkdown')
+    ag = merge_list(list(to = to), list(...))
+    ag = ag[intersect(names(formals(ns$pandoc_options)), names(ag))]
+    opts = do.call(ns$pandoc_options, ag)
+    return(ns$output_format(NULL, opts))
+  }
+  stop(msg, call. = FALSE)
 }
 
 #' Output formats in YAML metadata
 #'
-#' The primary output formats of \pkg{litedown} are HTML and LaTeX. These output
-#' formats can be configured in the `output` field of the YAML metadata of the
-#' Markdown document.
+#' These functions exist only for historical reasons, and should never be called
+#' directly. They can be used to configure output formats in YAML, but you are
+#' recommended to use the file format names instead of these function names.
 #'
-#' The output format functions have two purposes. The main purpose is to make it
-#' possible (and easier) to configure the output formats using YAML metadata
-#' inside a document, e.g.,
+#' To configure output formats in the YAML metadata of the Markdown document,
+#' simply use the output format names such as `html` or `latex` in the `output`
+#' field in YAML, e.g.,
 #'
 #' ```yaml
 #' ---
 #' output:
-#'   litedown::html_format:
+#'   html:
 #'     options:
 #'       toc: true
 #'     keep_md: true
-#'   litedown::latex_format:
+#'   latex:
 #'     latex_engine: pdflatex
 #' ---
 #' ```
 #'
-#' The secondary purpose is for \pkg{rmarkdown} users to render R Markdown via
-#' [knitr::knit()] and [mark()] (instead of Pandoc), and also use the `Knit`
-#' button in RStudio. Although you can render R Markdown to Markdown via either
-#' `knitr::knit()` or [fuse()], please note that the two ways are not 100%
-#' compatible with each other. If you choose to use \pkg{litedown}, we recommend
-#' that you use `fuse()` instead. If you want `fuse()` to work with the `Knit`
-#' button in RStudio, you have to add a special field to YAML:
-#'
-#' ```yaml
-#' ---
-#' knit: litedown:::knit
-#' ---
-#' ```
-#'
-#' Without this field, RStudio will use \pkg{knitr} to render R Markdown.
+#' You can also use `litedown::html_format` instead of `html` (or
+#' `litedown::latex_format` instead of `latex`) if you like.
 #' @param meta,options Arguments to be passed to [mark()].
 #' @param template A template file path.
 #' @param keep_md,keep_tex Whether to keep the intermediate \file{.md} and
@@ -68,7 +54,9 @@ output_format = function(to, options, meta, template, keep_md, ...) {
 #' @param latex_engine The LaTeX engine to compile \file{.tex} to \file{.pdf}.
 #' @param citation_package The LaTeX package for processing citations. Possible
 #'   values are `none`, `natbib`, and `biblatex`.
-#' @return An R Markdown output format.
+#' @note If you want to use the `Knit` button in RStudio, you must add a
+#'   top-level field `knit: litedown:::knit` to the YAML metadata. See
+#'   \url{https://yihui.org/litedown/#sec:knit-button} for more information.
 #' @export
 html_format = function(options = NULL, meta = NULL, template = NULL, keep_md = FALSE) {
   output_format('html', options, meta, template, keep_md)
@@ -80,16 +68,8 @@ latex_format = function(
   options = NULL, meta = NULL, template = NULL, keep_md = FALSE,
   keep_tex = FALSE, latex_engine = 'xelatex', citation_package = 'natbib'
 ) {
-  output_format(
-    'latex', options, meta, template, keep_md,
-    keep_tex = keep_tex, latex_engine = latex_engine
-  )
+  output_format()
 }
-
-# compatibility layers to rmarkdown::[html|pdf]_document
-html_document = function(...) do.call(html_format, map_args(...))
-html_vignette = function(...) html_document(...)
-pdf_document = function(...) do.call(latex_format, map_args(...))
 
 # map rmarkdown arguments to markdown
 map_args = function(
@@ -122,25 +102,28 @@ map_args = function(
 # split YAML and body from text input, and normalize rmarkdown output formats in
 # YAML to litedown's formats
 yaml_body = function(text) {
-  res = xfun::yaml_body(text)
-  if (length(out <- res$yaml[['output']]) == 0 || !is.list(out)) return(res)
-  fmt = c(
-    html_document = 'litedown::html_format',
-    html_vignette = 'litedown::html_format',
-    pdf_document = 'litedown::latex_format'
-  )
+  res = xfun::yaml_body(text, use_yaml = FALSE)
+  if (!length(out <- res$yaml[['output']])) {
+    # if the key 'format' is provided, normalize it to 'output'
+    if (length(out <- res$yaml[['format']])) res$yaml$format = NULL else return(res)
+  }
+  if (is.character(out)) out = set_names(vector('list', length(out)), out)
+  if (!is.list(out))
+    stop('The output format field in YAML must be either list or character')
+  fmt = c(html_document = 'html', html_vignette = 'html', pdf_document = 'latex')
   for (i in intersect(names(fmt), names(out))) {
     out[[i]] = if (is.list(out[[i]])) do.call(map_args, out[[i]]) else list()
     names(out)[names(out) == i] = fmt[i]
   }
+  # normalize format names `(lite|mark)down::*_format` to `*`
+  names(out) = gsub('^(lite|mark)down::+([^_]+)_.*', '\\2', names(out))
   res$yaml$output = out
   res
 }
 
 # get metadata from a certain field under an output format
 yaml_field = function(yaml, format, name = 'meta') {
-  i = sprintf('litedown::%s_format', format)
-  if (is.list(out <- yaml[['output']]) && is.list(out <- out[[i]])) {
+  if (is.list(out <- yaml[['output']]) && is.list(out <- out[[format]])) {
     if (length(name) == 1) out[[name]] else out[name]
   }
 }
@@ -148,8 +131,7 @@ yaml_field = function(yaml, format, name = 'meta') {
 # get output format from YAML's `output` field
 yaml_format = function(yaml) {
   if (is.list(out <- yaml[['output']])) out = names(out)
-  out = grep_sub('^litedown::([^_]+)_.*', '\\1', out)
-  if (length(out) < 1) 'html' else out[1]
+  c(out, 'html')[1]
 }
 
 # determine output format based on output file name and input's YAML
