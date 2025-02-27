@@ -28,7 +28,7 @@
 #' - `newfile`: Build an input file if it does not have a `.html` output file.
 #'
 #' - `outdated`: Rebuild an input file if the modification time of its `.html`
-#' output file is newer than the input.
+#' output file is older than the input.
 #' @param input The root directory of the site, or a vector of input file paths.
 #' @return Output file paths (invisibly).
 #' @export
@@ -52,8 +52,7 @@ fuse_site = function(input = '.') {
   }
   opts = yaml_field(info$yaml, 'html', c('meta', 'options'))
   opts[['meta']] = merge_list(list(
-    css = c("@default", "@article", '@site', "@copy-button", "@heading-anchor"),
-    js = c("@sidenotes", "@appendix", "@toc-highlight", "@copy-button", "@heading-anchor"),
+    css2 = c(site_css, '@site'), js2 = site_js,
     include_before = nav_menu(info), include_after = format(Sys.Date(), '&copy; %Y')
   ), opts[['meta']])
   opts[['options']] = merge_list(
@@ -87,6 +86,10 @@ fuse_site = function(input = '.') {
     if (i) out[[1]] else xfun::file_string(output)
   } else invisible(output)
 }
+
+# common css/js for sites/books
+site_css = c('@default', '@article', '@copy-button', '@heading-anchor', '@pages')
+site_js = c('@sidenotes', '@appendix', '@toc-highlight', '@copy-button', '@heading-anchor', '@pages')
 
 # set global options litedown.html.[meta|options] read from _litedown.yml
 set_site_options = function(opts, input, root, extra = NULL) {
@@ -229,8 +232,9 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
         fuse(x, fmt, NULL, envir)
       }
     }
-    # remove YAML in the preview mode since we only need the body
-    if (length(preview)) out = yaml_body(split_lines(out))$body  # TODO: use parse = FALSE
+    # remove YAML in the preview mode or for non-index chapters since we only need the body
+    if (length(preview) || isFALSE(.env$current_index) || x != input[1])
+      out = sans_yaml(out)
 
     if (format != 'html') return(out)
     # add input filenames to the end for HTML output and wrap each file in a div
@@ -252,17 +256,18 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
     )
   })
   tweak_options(format, yaml, list(
-    body_class = '',
-    css = c("@default", "@article", "@book", "@copy-button", "@heading-anchor"),
-    js = c("@sidenotes", "@appendix", "@toc-highlight", "@copy-button", "@heading-anchor")
+    body_class = '', css2 = c(site_css, '@book'), js2 = site_js
   ), toc = length(preview) == 0)
   fuse_output(input[1], output, unlist(res), full)
 }
 
 # read the config file _litedown.yml
 yml_config = function(d) {
-  if (file_exists(cfg <- file.path(d, '_litedown.yml')))
-    xfun::yaml_load(read_utf8(cfg), use_yaml = FALSE)
+  if (file_exists(cfg <- file.path(d, '_litedown.yml'))) {
+    yaml = xfun::taml_file(cfg)
+    if (!is.null(yaml2 <- normalize_yaml(yaml))) yaml = yaml2
+    yaml
+  }
 }
 
 site_pattern = '[.][Rq]?md$'

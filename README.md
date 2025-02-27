@@ -15,6 +15,8 @@
 release](https://www.r-pkg.org/badges/version/litedown)](https://cran.r-project.org/package=litedown)
 [![litedown on
 r-universe](https://yihui.r-universe.dev/badges/litedown)](https://yihui.r-universe.dev/litedown)
+[![Codecov test
+coverage](https://codecov.io/gh/yihui/litedown/branch/main/graph/badge.svg)](https://app.codecov.io/gh/yihui/litedown?branch=main)
 
 <!-- badges: end -->
 
@@ -66,7 +68,7 @@ $$\mathrm{litedown} = \min{\{R\}} + \{D_i\} - \{D_e\} + \{J\}$$
 
 -   $R$ = **knitr** + **evaluate** + **rmarkdown** + **bookdown** +
     **blogdown** + **pagedown** + **pkgdown** + **xaringan** + **tufte** +
-    **distill**
+    **distill** + **htmlwidgets**
 
 -   $D_i$ = (internal dependencies) **commonmark** + **xfun**
 

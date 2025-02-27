@@ -7,11 +7,11 @@
 #' dependencies), and it also has fewer Markdown features.
 #' @importFrom xfun alnum_id base64_uri csv_options del_empty_dir dir_create
 #'   divide_chunk download_cache exit_call fenced_block fenced_div file_exists
-#'   file_ext grep_sub html_escape in_dir is_abs_path is_blank is_rel_path
-#'   loadable mime_type new_app new_record normalize_path parse_only prose_index
-#'   raw_string read_all read_utf8 record_print relative_path Rscript_call
-#'   same_path sans_ext set_envvar split_lines try_error try_silent with_ext
-#'   write_utf8
+#'   file_ext grep_sub html_escape html_tag html_value in_dir is_abs_path
+#'   is_blank is_rel_path loadable mime_type new_app new_record normalize_path
+#'   parse_only prose_index raw_string read_all read_utf8 record_print
+#'   relative_path Rscript_call same_path sans_ext set_envvar split_lines
+#'   try_error try_silent with_ext write_utf8
 '_PACKAGE'
 
 # an internal environment to store some intermediate objects
@@ -338,7 +338,10 @@ pkg_manual = function(
     # run examples
     if (is.list(examples)) {
       xfun::pkg_attach(name)
-      default = list(print = NA, dev.path = 'manual/', dev.args = list(width = 9, height = 7))
+      default = list(print = function(x, ...) {
+        if (inherits(x, 'xfun_raw_string')) record_print(x) else
+          xfun:::record_print.default(x)
+      }, dev.path = 'manual/', dev.args = list(width = 9, height = 7))
       txt = run_examples(txt, merge_list(default, examples), sans_ext(i))
     }
     # remove existing ID and class
@@ -354,7 +357,7 @@ pkg_manual = function(
       if (is.function(env[[x]])) paste0(x, '()') else x  # add () after function names
     })
     sprintf('<a href="#sec:man-%s"><code>%s</code></a>', target, fn)
-  }, list(al, sans_ext(names(al))), list()))
+  }, al, sans_ext(names(al))))
 
   g = toupper(substr(unlist(al), 1, 1))
   g[!g %in% LETTERS] = 'misc'
@@ -368,6 +371,7 @@ pkg_manual = function(
   res = gsub(r, '\\1https://rdrr.io/cran/\\2/man/', res)
   res = gsub(" (id|class)='([^']+)'", ' \\1="\\2"', res)  # ' -> "
   res = gsub('<h3>', '<h3 class="unnumbered unlisted">', res, fixed = TRUE)
+  res = gsub('<code style="[^"]+">', '<code>', res)
   res = gsub('<code id="[^"]+">', '<code>', res)
   res = gsub('(<code[^>]*>)\\s+', '\\1', res)
   res = gsub('\\s+(</code>)', '\\1', res)
@@ -375,6 +379,7 @@ pkg_manual = function(
   res = gsub('<div class="sourceCode ([^"]+)"><pre>(.+?)</pre></div>', '<pre><code class="language-\\1">\\2</code></pre>', res)
   res = gsub('<code class="language-R"', '<code class="language-r"', res, fixed = TRUE)
   res = gsub('&#8288;', '', res, fixed = TRUE)
+  res = gsub('<img src="../help/figures/', '<img src="man/figures/', res, fixed = TRUE)
   res = gsub('<table>', '<table class="table-full">', res, fixed = TRUE)
   new_asis(c(toc, res, vest(css = '@manual')))
 }
@@ -424,7 +429,16 @@ run_examples = function(html, config, path) {
   })
 }
 
-detect_pkg = function(error = TRUE) {
+# detect package name and root path from current and upper dirs
+detect_pkg = local({
+  res = NULL  # cache the detection
+  function(...) {
+    if (is.null(res) || !same_path('.', attr(res, 'wd'))) res <<- .detect_pkg(...)
+    res
+  }
+})
+
+.detect_pkg = function(error = TRUE) {
   ds = if (xfun::is_R_CMD_check()) {
     # R CMD check's working directory is PKG_NAME.Rcheck by default
     name = grep_sub('[.]Rcheck$', '', basename(getwd()))
@@ -449,7 +463,7 @@ detect_pkg = function(error = TRUE) {
     desc = read_utf8(file.path(root, 'DESCRIPTION'))
     name = grep_sub('^Package: (.+?)\\s*$', '\\1', desc)[1]
   }
-  structure(name, path = root)
+  structure(name, path = root, wd = getwd())
 }
 
 detect_news = function(name) {

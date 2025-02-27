@@ -16,7 +16,7 @@ counters = local({
 
 # use PCRE by default (which seems to handle multibyte chars better)
 gregexpr = function(..., perl = TRUE) base::gregexpr(..., perl = perl)
-
+attr = function(...) base::attr(..., exact = TRUE)  # exact attr() please
 `%|%` = function(x, y) if (length(x)) x else y
 if (getRversion() < '4.4.0') `%||%` = function(x, y) if (is.null(x)) y else x
 set_names = function(x, nm) {
@@ -31,9 +31,17 @@ sans_p = function(x) gsub('^<p[^>]*>|(</p>)?\n$', '', x)
 # remove ugly single quotes, e.g., 'LaTeX' -> LaTeX
 sans_sq = function(x) gsub("(^|\\W)'([^']+)'(\\W|$)", '\\1\\2\\3', x)
 
+# remove YAML header
+sans_yaml = function(x) {
+  if (length(x) && grepl('^---\\s*?($|\n)', x[1]))
+    x = xfun::yaml_body(split_lines(x), parse = FALSE)$body
+  x
+}
+
 is_lang = function(x) is.symbol(x) || is.language(x)
 
 uapply = function(..., recursive = TRUE) unlist(lapply(...), recursive = recursive)
+.mapply = function(fun, ...) base::.mapply(fun, list(...), NULL)
 
 #' Convert some ASCII strings to HTML entities
 #'
@@ -158,7 +166,13 @@ is_R = function(input, text) {
 # make an output filename with the format and input name
 auto_output = function(input, output, format = NULL) {
   # change NULL to a filename extension
-  if (is.null(output) && !is.null(format)) output = md_formats[format]
+  if (is.null(output) && !is.null(format)) {
+    output = md_formats[format]
+    if (is.na(output)) stop(
+      "The output format '", format, "' is not supported (must be ",
+      xfun::join_words(names(md_formats), and = ' or ', before = "'"), ")."
+    )
+  }
   # non-character `output` means the output shouldn't be written to a file
   if (is.character(output)) {
     if (startsWith(output, 'markdown:')) output = 'markdown'
@@ -349,7 +363,7 @@ set_highlight = function(options, html) {
 
   # if resources need to be embedded, we need to work harder to figure out which
   # js files to embed (this is quite tricky and may not be robust)
-  embed = 'https' %in% options[['embed_resources']]
+  embed = ('https' %in% options[['embed_resources']]) || is.character(options[['offline']])
 
   # style -> css
   css = c(if (is.null(s <- o$style)) {
@@ -512,12 +526,24 @@ add_citation = function(x, bib, format = 'html') {
     })
     ifelse(is.na(z2), z, z2)
   })
-  if (is_html) x = one_string(c(x, '<div id="refs">', bib_html(bib, cited), '</div>'))
+  if (is_html) {
+    b = bib_html(bib, cited)
+    d = '<div id="refs">'
+    if (any(grepl(d, x, fixed = TRUE))) {
+      x = sub(d, paste0(d, one_string(b)), x, fixed = TRUE)
+    } else {
+      x = one_string(c(x, d, b, '</div>'))
+    }
+  }
   x
 }
 
 # fall back to given name if family name is empty
-author_name = function(x) paste(x$family %|% x$given, collapse = ' ')
+author_name = function(x) {
+  a = paste(x$family %|% x$given, collapse = ' ')
+  a = gsub('\\{\\\\(.)}', '\\1', a)  # un-escape special latex chars
+  html_escape(a)
+}
 
 # mimic natbib's author-year citation style for HTML output
 cite_html = function(keys, bib, bracket = TRUE) {
@@ -578,7 +604,7 @@ build_toc = function(html, n = 3) {
   items = unlist(match_full(html, r))
   # ignore headings with class="unlisted"
   items = items[!has_class(items, 'unlisted')]
-  if (length(items) == 0) return()
+  if (length(items) <= 1) return()  # require at least 2 items in TOC
   x = gsub(r, '<toc\\2>\\3</toc>', items)  # use a tag <toc> to protect heading text
   x = gsub('<a[^>]+>|</a>', '', x)  # clean up <a>
   h = as.integer(gsub('^h', '', gsub(r, '\\1', items)))  # heading level
@@ -631,10 +657,9 @@ move_attrs = function(x, format = 'html') {
       paste0(z1, z3, z24)
     })
     # links
-    x = convert_attrs(x, '(<a[^>]+)(>.+?</a>)(\\{([^}]+)\\})?', '\\4', function(r, z, z3) {
-      z1 = sub(r, '\\1', z)
-      z2 = sub(r, '\\2', z)
-      z3 = str_trim(z3)
+    x = convert_attrs(x, '(<a[^>]+)(>(?s).*?</a>)(\\{([^}]+)\\})?', '\\4', function(r, z, z3) {
+      z1 = sub(r, '\\1', z, perl = TRUE)
+      z2 = sub(r, '\\2', z, perl = TRUE)
       paste0(z1, ifelse(z3 == '', '', ' '), z3, z2)
     })
     # fenced Div's
@@ -708,14 +733,15 @@ move_attrs = function(x, format = 'html') {
 convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
   r2 = '(?<=^| )[.#]([-:[:alnum:]]+)(?= |$)'  # should we allow other chars in ID/class?
   match_replace(x, r, function(y) {
+    z = sub(r, s, y, perl = TRUE)
     if (format == 'html') {
-      z = gsub('[\U201c\U201d]', '"', y)
+      z = gsub('[\U201c\U201d]', '"', z)
     } else {
-      z = gsub('=``', '="', y, fixed = TRUE)
+      z = gsub('=``', '="', z, fixed = TRUE)
       z = gsub("''( |\\\\})", '"\\1', z)
       z = gsub('\\\\([#%])', '\\1', z)
     }
-    z2 = f2(sub(r, s, z))
+    z2 = f2(z)
     # {-} is a shorthand of {.unnumbered}
     z2[z2 == '-'] = '.unnumbered'
     # convert #id to id="" and .class to class=""
@@ -735,7 +761,7 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
     })
     # remove spaces after class="..." (caused by merging multiple classes)
     z2 = sub('(^| )(class="[^"]+")  +', '\\1\\2 ', z2)
-    f(r, z, str_trim(z2))
+    f(r, y, str_trim(z2))
   })
 }
 
@@ -945,9 +971,31 @@ latex_refs = function(x, r, clever = FALSE) {
 
 embed_resources = function(x, options) {
   if (length(x) == 0) return(x)
+  r = '\n<link[^>]*? rel="stylesheet" [^>]*>|\n<script[^>]*? src="[^"]+"[^>]*>\\s*</script>'
+  x2 = NULL  # to be appended to <head>
+  x = match_replace(x, r, function(z) {
+    # de-dup assets (e.g., when vest() is called multiple times on the same asset)
+    z[duplicated(z)] = ''
+    i = grep(' defer(>| ).*</script>$', z)
+    x2 <<- c(x2, z[i])
+    z[i] = ''
+    z
+  })
+  # move deferred scripts to the end of <head>
+  if (length(x2)) {
+    x = if (length(grep('</head>', x)) != 1) {
+      one_string(c(x2, x))
+    } else {
+      match_replace(x, '</head>', fixed = TRUE, perl = FALSE, function(z) {
+        one_string(c(x2, z))
+      })
+    }
+  }
+
   embed = c('https', 'local') %in% options[['embed_resources']]
-  if (!any(embed)) return(x)
-  clean = isTRUE(options[['embed_cleanup']])
+  offline = options[['offline']]
+  if (!any(embed, is.character(offline))) return(x)
+  clean = options[['embed_cleanup']]
 
   # find images in <img> and (for slides only) comments
   rs = c(
@@ -962,6 +1010,7 @@ embed_resources = function(x, options) {
     for (i in grep('^data:.+;base64,.+', z2, invert = TRUE)) {
       is_svg = grepl('[.]svg$', f <- z2[i]) && grepl('^<img', z1[i])
       a = if (is_svg) str_trim(gsub('^"|/>$', '', z3[i])) else ''
+      f = download_url(f, offline)
       if (is_https(f)) {
         if (embed[1]) z2[i] = if (!is_svg) download_cache$get(f, 'base64') else {
           download_cache$get(f, 'text', function(xml) process_svg(xml, a))
@@ -980,35 +1029,22 @@ embed_resources = function(x, options) {
 
   # CSS and JS
   r = paste0(
-    '<link[^>]* rel="stylesheet" href="([^"]+)"[^>]*>|',
-    '<script[^>]* src="([^"]+)"[^>]*>\\s*</script>'
+    '<link[^>]*? rel="stylesheet" href="([^"]+)"[^>]*>|',
+    '<script([^>]*?) src="([^"]+)"([^>]*)>\\s*</script>'
   )
-  x2 = NULL  # to be appended to x
-  x = match_replace(x, r, function(z) {
+  match_replace(x, r, function(z) {
     z1 = sub(r, '\\1', z)  # css
-    z2 = sub(r, '\\2', z)  # js
+    z2 = sub(r, '\\3', z)  # js
     js = z2 != ''
     z3 = paste0(z1, z2)
     # skip resources already base64 encoded
     i1 = !grepl('^data:.+;base64,.+', z3)
-    z3[i1] = gen_tags(z3[i1], ifelse(js[i1], 'js', 'css'), embed[1], embed[2])
-    # for <script>s with defer/async, move them to the end of </body>
-    i2 = grepl(' (defer|async)(>| )', z) & js
-    x2 <<- c(x2, z3[i2])
-    z3[i2] = ''
+    z3[i1] = gen_tags(
+      z3[i1], ifelse(js[i1], 'js', 'css'), embed[1], embed[2], offline,
+      sub(r, '\\2\\4', z)  # attributes for js
+    )
     z3
   })
-  # move defer/async js to the end of <body>
-  if (length(x2)) {
-    x = if (length(grep('</body>', x)) != 1) {
-      one_string(c(x, x2))
-    } else {
-      match_replace(x, '</body>', fixed = TRUE, perl = FALSE, function(z) {
-        one_string(c(x2, z))
-      })
-    }
-  }
-  x
 }
 
 # remove the xml/doctype declaration in svg, and add attributes
@@ -1034,6 +1070,9 @@ normalize_options = function(x, format = 'html') {
   d[names(g)] = g  # merge global options() into default options
   d[n] = x  # then merge user-provided options
   if (!is.character(d[['top_level']])) d$top_level = 'section'
+  if (isTRUE(o <- d[['offline']])) o = 'assets'
+  if (!is.character(o)) o = FALSE
+  d$offline = o
   d = normalize_embed(d)
   # TODO: fully enable footnotes https://github.com/github/cmark-gfm/issues/314
   if (format == 'html' && !is.logical(d[['footnotes']])) d$footnotes = TRUE
@@ -1089,11 +1128,23 @@ jsd_version = local({
     }
     file.path(d, 'jsd_versions.rds')
   }
+  # update cache to a specific version
+  u_cache = function(info, pkg, version, file) {
+    if (!grepl('^@', version)) version = paste0('@', version)
+    info[[pkg]] = list(version = version, time = Sys.time())
+    saveRDS(info, file)
+    version
+  }
   # cache expires after one week by default
   v_cache = function(pkg, force, delta = getOption('litedown.jsdelivr.cache', 604800)) {
-    if (!force && file.exists(f <- p_cache())) {
-      info = readRDS(f)[[pkg]]
-      if (!is.null(t <- info$time) && Sys.time() - t <= delta) info$version
+    if (!isTRUE(force) && file.exists(f <- p_cache())) {
+      info = readRDS(f)
+      if (is.character(force)) {
+        u_cache(info, pkg, force, f)
+      } else {
+        info = info[[pkg]]
+        if (!is.null(t <- info$time) && Sys.time() - t <= delta) info$version
+      }
     }
   }
   # query version from jsdelivr api
@@ -1106,16 +1157,16 @@ jsd_version = local({
     if (length(v)) {
       if (dir_create(dirname(f <- p_cache()))) {
         info = if (file.exists(f)) readRDS(f) else list()
-        info[[pkg]] = list(version = v[1], time = Sys.time())
-        saveRDS(info, f)
+        u_cache(info, pkg, v[1], f)
       }
       v[1]
     }
   }
+  # force can be TRUE/FALSE/version number
   function(pkg, force = FALSE) {
-    if (!force && is.character(v <- vers[[pkg]])) return(v)
+    if (isFALSE(force) && is.character(v <- vers[[pkg]])) return(v)
     v = v_cache(pkg, force) %||% v_api(pkg)
-    vers[[pkg]] <<- if (length(v)) v[1] else ''
+    (vers[[pkg]] <<- if (length(v)) v[1] else '')
   }
 })
 
@@ -1123,13 +1174,15 @@ jsd_versions = function(pkgs) uapply(pkgs, jsd_version)
 
 # resolve the implicit latest version to current latest version
 jsd_resolve = function(x) {
+  if (!getOption('litedown.jsd_resolve', TRUE)) return(x)
   rs = paste0(c(
     '((?<=https://cdn.jsdelivr.net/combine/)|(?<=,))',
     '(?<=https://cdn.jsdelivr.net/)(?!combine/)'
-  ), '([^/]+/(@[^/]+/)?[^/@]+)(?=/)')
+  ), '([^/]+/(@[^/]+/)?[^/@]+)((?=/)|(?=@latest$)|$)')
   for (r in rs) x = match_replace(x, r, function(z) {
     paste0(z, jsd_versions(z))
   })
+  x = sub('@latest$', '', x)
   x
 }
 
@@ -1142,9 +1195,13 @@ resolve_dups = function(x) {
   x
 }
 
-# add filename extensions to paths without extensions
+# add filename extensions to paths without extensions: the path should contain
+# no slashes (@xiee/utils assets) or at least 2 slashes when the npm package
+# name doesn't start with @ (otherwise the path should contain >= 3 slashes),
+# e.g. don't add ext for npm/simple-datatables
 add_ext = function(x, ext) {
-  i = file_ext(x) == ''
+  n = vapply(strsplit(x, ''), function(z) sum(z == '/'), 0)
+  i = file_ext(x) == '' & (n == 0 | n > grepl('^[^/]+/@', x) + 2)
   x[i] = paste0(x[i], ext)
   x
 }
@@ -1215,12 +1272,15 @@ map_assets = function(x, ext) {
 }
 
 # generate tags for css/js depending on whether they need to be embedded or offline
-gen_tag = function(x, ext = file_ext(x), embed_https = FALSE, embed_local = FALSE) {
+gen_tag = function(
+  x, ext = file_ext(x), embed_https = FALSE, embed_local = FALSE,
+  offline = FALSE, attr = ' defer'
+) {
   if (ext == 'css') {
     t1 = '<link rel="stylesheet" href="%s">'
     t2 = c('<style type="text/css">', '</style>')
   } else if (ext == 'js') {
-    t1 = '<script src="%s" defer></script>'
+    t1 = paste0('<script src="%s"', attr, '></script>')
     t2 = c('<script>', '</script>')
   } else stop("The file extension '", ext, "' is not supported.")
   is_web = is_https(x)
@@ -1229,9 +1289,14 @@ gen_tag = function(x, ext = file_ext(x), embed_https = FALSE, embed_local = FALS
     warning('MathJax.js cannot be embedded. Please use MathJax v3 instead.')
     embed_https = FALSE
   }
-  if ((is_rel && !embed_local) || (is_web && !embed_https)) {
-    # linking for 1) local rel paths that don't need to be embedded, or 2) web
-    # resources that don't need to be accessed offline
+  # linking for 1) local rel paths that don't need to be embedded, or 2) web
+  # resources that don't need to be accessed offline
+  link1 = is_rel && !embed_local
+  link2 = is_web && !embed_https
+  if (link1 || link2) {
+    if (link2) x = download_url(
+      x, offline, handler = function(code) resolve_url(x, code, ext, FALSE)
+    )
     sprintf(t1, x)
   } else {
     # embedding for other cases
@@ -1255,16 +1320,16 @@ resolve_external = function(x, web = TRUE, ext = '') {
         '^/[*][*]\n( [*][^\n]*\n)+ [*]/\n|\n/[*/]# sourceMappingURL=.+[.]map( [*]/)?$',
         '', one_string(code)
       )
-      code = base64_url(x, code, ext)
+      code = resolve_url(x, code, ext)
     }
     code
   }) else {
-    base64_url(x, read_utf8(x), ext)
+    resolve_url(x, read_utf8(x), ext)
   }
 }
 
-# find url("path") in JS/CSS and base64 encode the resources
-base64_url = function(url, code, ext) {
+# find url("path") in JS/CSS and base64 encode or download the resources
+resolve_url = function(url, code, ext, encode = TRUE) {
   d = dirname(url)
   # embed fonts in mathjax's js
   if (grepl('^https://cdn[.]jsdelivr[.]net/npm/mathjax.+[.]js$', url)) {
@@ -1272,8 +1337,14 @@ base64_url = function(url, code, ext) {
     p = grep_sub(r, '\\1', code)
     if (length(p) == 1) code = match_replace(
       code, '(?<=src:\'url\\(")(%%URL%%/[^"]+)(?="\\))', function(u) {
-        u = sub('%%URL%%', paste(d, p, sep = '/'), u, fixed = TRUE)
-        uapply(u, function(x) download_cache$get(x, 'base64'))
+        f = sub('%%URL%%/', '', u, fixed = TRUE)
+        u2 = paste(d, p, f, sep = '/')
+        if (encode) {
+          uapply(u2, download_cache$get, 'base64')
+        } else {
+          .mapply(function(u, f) download_url(u, p, f), u2, f)
+          u
+        }
       }
     ) else warning(
       'Unable to determine the font path in MathJax. Please report an issue to ',
@@ -1287,15 +1358,41 @@ base64_url = function(url, code, ext) {
       z1 = gsub(r, '\\1', z)
       z2 = gsub(r, '\\2', z)
       z3 = gsub(r, '\\3', z)
-      i = !is_https(z2)
-      z2[i] = paste(d, z2[i], sep = '/')
-      z2 = uapply(z2, function(x) {
-        if (is_https(x)) download_cache$get(x, 'base64') else base64_uri(x)
+      i = is_https(z2)
+      u = ifelse(i, z2, sprintf('%s/%s', d, z2))
+      z2 = unlist(if (encode) {
+        lapply(u, function(x) {
+          if (is_https(x)) download_cache$get(x, 'base64') else base64_uri(x)
+        })
+      } else {
+        .mapply(function(u, i, f) download_url(u, '.', if (!i) f), u, i, z2)
       })
       paste0(z1, z2, z3)
     })
   }
   code
+}
+
+# download a file to a local dir if the local file doesn't exist
+download_url = function(url, dir = '.', file = NULL, handler = NULL) {
+  if (!is.character(dir) || !is_https(url) || grepl('^http://127.0.0.1', url))
+    return(url)
+  f = file %||% gsub('^https?://|[?#].*$', '', url)
+  p = URLdecode(f)
+  # see if a previous version of the jsd asset exists
+  if (dir.exists(dir) && startsWith(p, 'cdn.jsdelivr.net/')) in_dir(dir, {
+    p2 = sub('@[0-9.]+/', '@*/', p)
+    if (n <- length(p2 <- Sys.glob(p2))) p = p2[n]
+  })
+  if (dir != '.') p = file.path(dir, p)
+  if (!file_exists(p)) {
+    xfun::download_file(url, p)
+    if (is.function(handler)) xfun::process_file(p, function(x) {
+      x  # force eval before changing wd
+      in_dir(dirname(p), handler(x))
+    })
+  }
+  URLencode(p)
 }
 
 # compact HTML code

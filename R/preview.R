@@ -162,7 +162,7 @@ dir_page = function(dir = '.') {
   }
   i1 = is_lite_ext(file = files)
   # order first by folder, then by .Rmd/.R, and other files go to the end
-  res = lapply(files[i1], function(f) {
+  res = lapply(files[i1][order(grepl('^[_.]', basename(files[i1])))], function(f) {
     b = basename(f)
     fenced_div(c(
       fenced_div(c(
@@ -219,7 +219,7 @@ file_resp = function(x, preview) {
     list(payload = switch(
       info$type,
       book = {
-        store_book(info$root, x)
+        store_book(info$root, x, info$index)
         fuse_book(if (info$index) info$root else x, full_output, globalenv())
       },
       site = fuse_site(x),
@@ -240,9 +240,13 @@ file_resp = function(x, preview) {
 
 # store book dir for books to resolve number_refs() because the book may be
 # partially rendered (in which case we can't resolve refs to other chapters)
-store_book = function(dir, x) {
-  .env$current_book = dir; .env$current_file = x
-  exit_call(function() .env$current_book <- .env$current_file <- NULL)
+store_book = function(dir, x, index = FALSE) {
+  f = function(...) .mapply(
+    function(n, v) .env[[paste0('current_', n)]] = v,
+    c('book', 'file', 'index'), list(...)
+  )
+  f(dir, x, index)
+  exit_call(function() f(NULL))
 }
 
 # detect project type for a directory (_litedown.yml may be in an upper-level dir)
@@ -327,8 +331,7 @@ new_file = function(path, ext, type, css = NULL, js = NULL) {
   if (nrow(a)) m$output$html = list(meta = list(
     css = I(na_omit(a[, 'css'])), js = I(na_omit(a[, 'js']))
   ))
-  taml_save = getFromNamespace('taml_save', 'xfun')  # TODO: remove this hack
-  txt = c('---', taml_save(m), '---', '', 'Relax. I need some information first.')
+  txt = c('---', xfun::taml_save(m), '---', '', 'Relax. I need some information first.')
   if (ext == 'r') txt = paste("#'", split_lines(txt))
   write_utf8(txt, path)
   'view'

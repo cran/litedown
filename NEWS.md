@@ -1,3 +1,17 @@
+# CHANGES IN litedown VERSION 0.6
+
+- Added a Markdown rendering option `offline` to download web resources when this option is set to true, so that the HTML output can be viewed offline (thanks, @TimTaylor, #73). See https://yihui.org/litedown/#sec:offline for more info.
+
+- Added a function `get_context()` to query the `fuse()` context such as the input file path or the output format (thanks, @MichaelChirico #67, @vincentarelbundock #70).
+
+- Added a function `raw_text()` to output raw text content in a code chunk (thanks, @vincentarelbundock, #69).
+
+- Dropped the chunk option `ref.label` and added a new chunk option `fill`, which is more general (`ref.label = "LABEL"` can be achieved by `` `<LABEL>` `` inside a chunk). See https://yihui.org/litedown/#sec:option-fill for more information.
+
+- Fixed a bug that `fuse()` fails to print the error location when the whole input document consists of a single chunk that throws an error (thanks, @kevinushey, yihui/knitr#2387).
+
+- `fuse_book()` will ignore YAML headers in book chapters except for the index chapter.
+
 # CHANGES IN litedown VERSION 0.5
 
 - Added a wizard in `roam()` to create new `.Rmd`/`.md`/`.R` files with selected HTML features.

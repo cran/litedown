@@ -324,6 +324,11 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   pkg_cite = yaml_field(yaml, format, 'citation_package')
   if (length(pkg_cite) != 1) pkg_cite = 'natbib'
   bib = yaml[['bibliography']]
+  # temporarily save the bib values when previewing a book because bib may only
+  # be specified in index.Rmd but not other chapters
+  if (is.character(b <- .env$current_book)) {
+    if (length(bib)) .env$bib[[b]] = bib else bib = .env$bib[[b]]
+  }
   if (length(bib) == 1 && grepl(',', bib)) bib = strsplit(bib, ',\\s*')[[1]]
   # add [@citation] (.bib files are assumed to be under output dir)
   if (length(bib)) {
@@ -409,7 +414,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     # for RStudio to capture the output path when previewing the output
     if (is_rmd_preview()) message('\nOutput created: ', output)
     if (is_pdf) invisible(output) else write_utf8(ret, output)
-  } else raw_string(ret)
+  } else raw_string(ret, lang = format)
 }
 
 # insert body and meta variables into a template
@@ -422,7 +427,10 @@ build_output = function(format, options, template, meta, ...) {
     )
     for (i in setdiff(names(defaults), names(meta))) meta[[i]] = defaults[[i]]
     # special handling for css/js "files" that have no extensions
-    for (i in c('css', 'js')) meta[[i]] = resolve_files(c(meta[[i]], acc_var(i)), i)
+    for (i in c('css', 'js')) {
+      i2 = paste0(i, '2')  # treat css2/js2 as global base (e.g. for sites)
+      meta[[i]] = resolve_files(c(meta[[i2]], meta[[i]], acc_var(i)), i)
+    }
   }
   sub_vars(tpl, meta, ...)
 }
@@ -470,6 +478,9 @@ markdown_options = function() {
     setdiff(commonmark::list_extensions(), 'tagfilter')
   )
   # options disabled by default
-  x2 = c('toc', 'hardbreaks', 'tagfilter', 'number_sections', 'cleveref', 'smartypants')
+  x2 = c(
+    'toc', 'hardbreaks', 'tagfilter', 'number_sections', 'cleveref', 'offline',
+    'smartypants'
+  )
   sort(c(paste0('+', x1), paste0('-', x2)))
 }

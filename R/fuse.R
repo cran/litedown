@@ -187,9 +187,6 @@ crack = function(input, text = NULL) {
     b$pos = b$col = NULL  # positions not useful anymore
     res[[j]] = b
   }
-  # TODO: should we support inline chunk references? If we do, I'd prefer a new
-  # syntax, e.g., `${label}`, instead of knitr's <<label>> syntax
-
   res
 }
 
@@ -251,7 +248,7 @@ sieve = function(input, text = NULL) {
         source = c(code), type = 'code_chunk', lines = l, code_start = l[1],
         options = list(engine = 'r', label = label)
       )
-    }, list(res, sprintf('chunk-%d', seq_along(res))), NULL)
+    }, res, sprintf('chunk-%d', seq_along(res)))
     return(res)
   }
 
@@ -307,7 +304,7 @@ sieve = function(input, text = NULL) {
   res[i] = .mapply(function(x, label) {
     if (is.null(x$options$label)) x$options$label = label
     x
-  }, list(res[i], sprintf('chunk-%d', seq_len(sum(i)))), NULL)
+  }, res[i], sprintf('chunk-%d', seq_len(sum(i))))
   res
 }
 
@@ -341,12 +338,26 @@ convert_knitr = function(input) {
   write_utf8(x, input)
 }
 
+#' Get the `fuse()` context
+#'
+#' A helper function to query the [fuse()] context (such as the input file path
+#' or the output format name) when called inside a code chunk.
+#' @param item The name of the context item.
+#' @return If the `item` is provided, return its value in the context. If
+#'   `NULL`, the whole context (an environment) is returned.
+#' @export
+#' @examples
+#' litedown::get_context('input')
+#' litedown::get_context('format')
+#' names(litedown::get_context())  # all available items
+get_context = function(item = NULL) if (is.null(item)) .env else .env[[item]]
+
 # return a string to indicate the error location
 get_loc = function(label) {
   l = .env$source_pos; n = length(l)
   if (n == 4) l = sprintf('#%d:%d-%d:%d', l[1], l[2], l[3], l[4])  # row1:col1-row2:col2
   if (n == 2) l = sprintf('#%d-%d', l[1], l[2])  # row1-row2
-  paste0(.env$input, l, if (label != '') paste0(' [', label, ']'))
+  paste0(.env$input2 %|% .env$input, l, if (label != '') paste0(' [', label, ']'))
 }
 
 # save line numbers in .env to be used in error messages
@@ -440,8 +451,8 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
       if (is.character(.env$wd.out)) .env$wd.out else '.'
     } else dirname(output_base)
   )
-  # store the environment
-  .env$global = envir
+  # store the environment and output format
+  .env$global = envir; .env$format = format
 
   # set default device to 'cairo_pdf' for LaTeX output, and 'png' for other formats
   if (is.null(opts$dev)) {
@@ -529,9 +540,9 @@ fiss = function(input, output = '.R', text = NULL) {
     }
   }
   # if error occurs, print error location with a clickable file link
-  k = n - 1  # when exiting, k should be n instead
+  k = 0  # when exiting, k should be n + 1
   on_error = function() {
-    if (k == n) return()  # blocks have been successfully fused
+    if (k > n) return()  # blocks have been successfully fused
     p_bar(p_clr)
     ansi_link(input)
     message('Quitting from ', get_loc(nms[k]))
@@ -557,14 +568,14 @@ fiss = function(input, output = '.R', text = NULL) {
     if (!isFALSE(time)) record_time(Sys.time() - t1, b$lines, nms[k])
     p_bar(p_clr)
   }
-  k = n
+  k = n + 1
   res
 }
 
 # add ANSI link on input path if supported
 ansi_link = function(x) {
   if (length(x) && isTRUE(as.logical(Sys.getenv('RSTUDIO_CLI_HYPERLINKS'))))
-    .env$input = sprintf(
+    .env$input2 = sprintf(
       '\033]8;%s;file://%s\a%s\033]8;;\a', link_pos(), normalize_path(x), x
     )
 }
@@ -667,7 +678,7 @@ fuse_code = function(x, blocks) {
 
   lab = opts$label; lang = opts$engine
 
-  # the source code could be from these chunk options: file, code, or ref.label
+  # the source code could be from chunk options 'file' or 'code'
   test_source = function(name) {
     if (length(opts[[name]]) == 0) return(FALSE)
     if (cond <- length(x$source) > 0) warning(
@@ -681,12 +692,13 @@ fuse_code = function(x, blocks) {
   } else if (test_source('code')) {
     x$source = opts$code
   } else {
-    labs = if (test_source('ref.label')) opts$ref.label else {
-      # use code from other chunks of the same label
-      if (length(x$source) == 0) which(names(blocks) == lab)
-    }
+    # use code from other chunks of the same label
+    labs = if (length(x$source) == 0) which(names(blocks) == lab)
     if (length(labs)) x$source = uapply(blocks[labs], `[[`, 'source')
   }
+
+  # resolve inline chunk references and do code interpolation
+  x$source = fill_source(x$source, opts$fill, blocks)
 
   res = if (isFALSE(opts$eval)) list(new_source(x$source)) else {
     if (is.function(eng <- engines(lang))) eng(x) else list(
@@ -776,8 +788,13 @@ fuse_code = function(x, blocks) {
       } else {
         if (type == 'message') x = sub('\n$', '', x)
         if (!asis) {
-          x = split_lines(x)
-          x = paste0(opts$comment, x)  # comment out text output
+          opt2 = attr(x, 'opts')
+          cmt = opts$comment %||% opt2$comment %||% '#> '
+          if (cmt != '') {
+            x = split_lines(x)
+            x = paste0(cmt, x)  # comment out text output
+          }
+          if (is.null(a)) if (!is.null(a <- opt2$attr)) a = c(a, '.plain')
         }
       }
       if (asis) {
@@ -817,6 +834,46 @@ fuse_code = function(x, blocks) {
   # add prefix (possibly indentation and > quote chars)
   if (!is.null(x$prefix)) out = gsub('^|(?<=\n)', x$prefix, out, perl = TRUE)
   out
+}
+
+# resolve `<label>` to chunk source, and evaluate `{code}` to string (to
+# interpolate original source)
+fill_source = function(x, fill, blocks) {
+  if (isFALSE(fill)) return(x)
+  x = fill_label(x, blocks)
+  fill_code(x, fill)
+}
+
+fill_label = function(x, blocks) {
+  r = '`<(.+?)>`'
+  for (i in grep(r, x)) {
+    ind = sub('^(\\s*).*', '\\1', x[i])  # possible indent
+    x[i] = match_replace(x[i], r, function(z) {
+      labs = sub(r, '\\1', z)  # chunk label
+      j = labs %in% names(blocks)
+      if (any(j)) z[j] = uapply(blocks[labs[j]], function(b) {
+        s = b$source
+        if ((n <- length(s)) > 0) {
+          paste0(c('', rep(ind, n - 1)), s, collapse = '\n')
+        } else ''
+      })
+      z
+    })
+  }
+  # recursion for possible more `<label>` markers
+  if (is.null(i)) x else fill_label(split_lines(x), blocks)
+}
+
+fill_code = function(x, fill) {
+  r = '`\\{(.+?)}`'
+  match_replace(x, r, function(z) {
+    code = sub(r, '\\1', z)
+    uapply(code, function(s) {
+      v = eval_code(s)
+      if (is.function(fill)) v = fill(v)
+      one_string(v)
+    })
+  })
 }
 
 # temporarily change the working directory inside a function call
@@ -869,6 +926,26 @@ new_plot = function(x) new_record(x, 'plot')
 new_asis = function(x, raw = FALSE) {
   res = new_record(x, 'asis')
   if (raw) raw_string(res) else res
+}
+
+#' Mark a character vector as raw output
+#'
+#' This function should be called inside a code chunk, and its effect is the
+#' same as the chunk option `results = "asis"`. The input character vector will
+#' be written verbatim to the output (and interpreted as Markdown).
+#' @param x A character vector (each element will be treated as a line).
+#' @param format An output format name, e.g., `html` or `latex`. If provided,
+#'   `x` will be wrapped in a fenced code block, e.g., ```` ```{=html}````.
+#' @return A character vector with a special class to indicate that it should be
+#'   treated as raw output.
+#' @export
+#' @examples
+#' litedown::raw_text(c('**This**', '_is_', '[Markdown](#).'))
+#' litedown::raw_text('<b>Bold</b>', 'html')
+#' litedown::raw_text('\\textbf{Bold}', 'latex')
+raw_text = function(x, format = NULL) {
+  if (length(fmt <- sprintf('=%s', format)) == 1) x = fenced_block(x, fmt)
+  new_asis(x, TRUE)
 }
 
 is_plot = function(x) inherits(x, 'record_plot')
@@ -992,7 +1069,7 @@ new_opts = function() {
 #' ls(opts)  # built-in options
 reactor = new_opts()
 reactor(
-  eval = TRUE, echo = TRUE, results = TRUE, comment = '#> ',
+  eval = TRUE, echo = TRUE, fill = TRUE, results = TRUE, comment = NULL,
   warning = TRUE, message = TRUE, error = NA, include = TRUE,
   strip.white = TRUE, collapse = FALSE, order = 0,
   attr.source = NULL, attr.output = NULL, attr.plot = NULL, attr.chunk = NULL,
@@ -1002,19 +1079,23 @@ reactor(
   fig.width = 7, fig.height = 7, fig.dim = NULL, fig.cap = NULL, fig.alt = NULL, fig.env = '.figure',
   tab.cap = NULL, tab.env = '.table', cap.pos = NULL,
   print = NULL, print.args = NULL, time = FALSE,
-  code = NULL, file = NULL, ref.label = NULL, child = NULL, purl = TRUE,
+  code = NULL, file = NULL, child = NULL, purl = TRUE,
   wd = NULL,
   signif = 3, power = 6, dollar = NA
 )
+
+eval_code = function(code, error = NA) {
+  expr = parse_only(code)
+  if (is.na(error)) eval(expr, fuse_env()) else tryCatch(
+    eval(expr, fuse_env()), error = function(e) if (error) e$message else ''
+  )
+}
 
 # the R engine
 eng_r = function(x, inline = FALSE, ...) {
   opts = reactor()
   if (inline) {
-    expr = parse_only(x$source)
-    res = if (is.na(opts$error)) eval(expr, fuse_env()) else tryCatch(
-      eval(expr, fuse_env()), error = function(e) if (opts$error) e$message else ''
-    )
+    res = eval_code(x$source, opts$error)
     return(fmt_inline(res, x$math))
   }
   args = reactor(
@@ -1066,7 +1147,7 @@ eng_embed = function(x, ...) {
     if (length(f) == 0) return()
     s = read_all(f)
   }
-  opts_new = list(comment = NULL)  # don't comment out file content
+  opts_new = list(comment = '')  # don't comment out file content
   # use the filename extension as the default language name
   if (is.null(opts$attr.output) && nchar(lang <- file_ext(f[1])) > 1) {
     lang = sub('^R', '', lang)  # Rmd -> md, Rhtml -> html, etc.
@@ -1074,6 +1155,34 @@ eng_embed = function(x, ...) {
     opts_new$attr.output = paste0('.', lang)
   }
   structure(list(new_output(s)), options = opts_new)
+}
+
+eng_html = function(x, inline = FALSE, html = NULL) {
+  out = fenced_block(html, '=html')
+  if (inline) one_string(c(out, '')) else list(new_source(x$source), new_asis(out))
+}
+
+eng_css = function(x, inline = FALSE, ...) {
+  if (is.character(h <- reactor('href'))) {
+    res = sprintf('<link rel="stylesheet" href="%s">', h)
+    if (inline) one_string(res) else list(new_asis(res))
+  } else {
+    eng_html(x, inline, c('<style type="text/css">', x$source, '</style>'))
+  }
+}
+
+eng_js = function(x, inline = FALSE, ...) {
+  opts = reactor()
+  a = list(type = opts$type, src = opts$src)
+  for (i in c('type', 'src')) a[[i]] = a[[i]]  # remove NULL
+  if (is.character(s <- a$src)) {
+    if (!isFALSE(opts$defer)) a['defer'] = list(NULL)
+    res = html_tag('script', NULL, a)
+    if (inline) one_string(res) else list(new_asis(res))
+  } else {
+    if (identical(a$type, 'module')) a$defer = NULL
+    eng_html(x, inline, html_tag('script', html_value(x$source), a))
+  }
 }
 
 #' Language engines
@@ -1100,14 +1209,8 @@ eng_embed = function(x, ...) {
 engines = new_opts()
 engines(
   r = eng_r, md = eng_md, mermaid = eng_mermaid, embed = eng_embed,
-  css = function(x, ...) eng_html(x, '<style type="text/css">', '</style>', ...),
-  js = function(x, ...) eng_html(x, '<script>', '</script>', ...)
+  css = eng_css, js = eng_js
 )
-
-eng_html = function(x, before = NULL, after = NULL, inline = FALSE) {
-  out = fenced_block(c(before, x$source, after), '=html')
-  if (inline) one_string(c(out, '')) else list(new_source(x$source), new_asis(out))
-}
 
 #' @export
 print.litedown_env = function(x, ...) {
