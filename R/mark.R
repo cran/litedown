@@ -147,10 +147,18 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   }
 
   p = NULL  # indices of prose
-  find_prose = function() if (is.null(p)) p <<- prose_index(text)
+  find_prose = local({
+    t = NULL
+    function() {
+      # return early if text has not changed
+      if (!is.null(p) && identical(text, t)) return(p)
+      t <<- text
+      p <<- prose_index(text)
+    }
+  })
   # superscript and subscript; for now, we allow only characters alnum|*|(|) for
   # script text but can consider changing this rule upon users' request
-  r2 = '(?<!`)\\^([[:alnum:]*()]+?)\\^(?!`)'
+  r2 = '(?<!`)\\^([[:alnum:]*(),.]+?)\\^(?!`)'
   if (has_sup <- test_feature('superscript', r2)) {
     id2 = id_string(text)
     find_prose()
@@ -160,7 +168,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       sprintf('!%s!', x)
     })
   }
-  r3 = '(?<![~`[:space:]])~([[:alnum:]*()]+?)~(?!`)'
+  r3 = '(?<![~`[:space:]])~([[:alnum:]*(),.]+?)~(?!`)'
   if (has_sub <- test_feature('subscript', r3)) {
     id3 = id_string(text)
     find_prose()
@@ -170,13 +178,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       sprintf('!%s!', x)
     })
   }
-  # TODO: remove this after commonmark > 1.9.2 is on CRAN
-  # disallow single tilde for <del> (I think it is an awful idea in GFM's
-  # strikethrough extension to allow both single and double tilde for <del>)
   find_prose()
-  text[p] = match_replace(text[p], r3, function(x) {
-    gsub('^~|~$', '\\\\~', x)
-  })
   # add line breaks before/after fenced Div's to wrap ::: tokens into separate
   # paragraphs or code blocks
   text[p] = sub('^([ >]*:::+ )([^ {]+)$', '\\1{.\\2}', text[p]) # ::: foo -> ::: {.foo}
@@ -414,7 +416,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     # for RStudio to capture the output path when previewing the output
     if (is_rmd_preview()) message('\nOutput created: ', output)
     if (is_pdf) invisible(output) else write_utf8(ret, output)
-  } else raw_string(ret, lang = format)
+  } else raw_string(ret, lang = paste0('.', format))
 }
 
 # insert body and meta variables into a template
@@ -468,8 +470,6 @@ yaml_text = function(part, text) if (length(l <- part$lines) == 2) text[l[1]:l[2
 #' @examples
 #' # all available options
 #' litedown::markdown_options()
-#'
-#' @example inst/examples/render-options.R
 markdown_options = function() {
   # options enabled by default
   x1 = c(

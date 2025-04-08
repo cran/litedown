@@ -31,12 +31,16 @@ sans_p = function(x) gsub('^<p[^>]*>|(</p>)?\n$', '', x)
 # remove ugly single quotes, e.g., 'LaTeX' -> LaTeX
 sans_sq = function(x) gsub("(^|\\W)'([^']+)'(\\W|$)", '\\1\\2\\3', x)
 
-# remove YAML header
+# remove YAML header (if title exists, convert it to h1)
 sans_yaml = function(x) {
-  if (length(x) && grepl('^---\\s*?($|\n)', x[1]))
-    x = xfun::yaml_body(split_lines(x), parse = FALSE)$body
+  if (length(x) && grepl('^---\\s*?($|\n)', x[1])) {
+    res = xfun::yaml_body(split_lines(x))
+    x = c(if (is.character(t <- res$yaml$title)) paste('#', t), res$body)
+  }
   x
 }
+
+split_chunk = function(...) xfun::divide_chunk(..., use_yaml = FALSE)
 
 is_lang = function(x) is.symbol(x) || is.language(x)
 
@@ -504,7 +508,7 @@ one_string = function(x, by = '\n', test = NULL) {
 # find @citation and resolve references
 add_citation = function(x, bib, format = 'html') {
   if (!format %in% c('html', 'latex')) return(x)
-  bib = do.call(c, lapply(bib, rbibutils::readBib, texChars = 'convert'))
+  bib = do.call(c, lapply(bib, rbibutils::readBib, direct = TRUE, texChars = 'convert'))
   if (length(bib) == 0) return(x)
   cited = NULL
   is_html = format == 'html'
@@ -1150,7 +1154,7 @@ jsd_version = local({
   # query version from jsdelivr api
   v_api = function(pkg) {
     x = tryCatch(
-      read_utf8(paste0('https://data.jsdelivr.com/v1/packages/', pkg, '/resolved')),
+      read_utf8(paste0('https://data.jsdelivr.com/v1/packages/', pkg, '/resolved?specifier=latest')),
       error = function(e) v_cache(pkg, FALSE, Inf)  # fall back to local cache
     )
     v = grep_sub('.*"version":\\s*"([0-9.]+)".*', '@\\1', x)

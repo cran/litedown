@@ -75,6 +75,8 @@ crack = function(input, text = NULL) {
 
   if (!length(m)) return(res)
 
+  set_error_handler(input)
+
   m = m[, m[2, ] == 'code', drop = FALSE]
   # find out inline code `{lang} expr`
   rx_inline = '^\\s*[{](.+?)[}]\\s+(.+?)\\s*$'
@@ -91,6 +93,24 @@ crack = function(input, text = NULL) {
     # column position is based on bytes instead of chars; needs to be adjusted to the latter
     pos = char_pos(text, as.integer(m[3:6, i]))
     i1 = pos[1]; i2 = pos[3]
+    # commonmark::markdown_xml(sourcepos = TRUE) gives wrong column info when
+    # the line has leading spaces (which are ignored), so doublecheck here (in
+    # theory we also need to consider the case i1 != i2 but that's a little too
+    # complicated and may be rare, too)
+    if (i1 == i2 && grepl('^\\s+', ti <- text[i1])) {
+      mi = restore_html(m[9, i])
+      if (substring(ti, pos[2], pos[4]) != mi) {
+        p = base::gregexpr(mi, ti, fixed = TRUE)[[1]]
+        if (length(p) > 1 || p < 1) {
+          save_pos(c(i1, i2)); stop(
+            'Unable to locate the inline code expression ', mi,
+            '. Please file an issue to https://github.com/yihui/litedown/issues ',
+            'with a minimal reproducible example.'
+          )
+        }
+        pos[2] = p; pos[4] = p + attr(p, 'match.length') - 1
+      }
+    }
     s = nchar(b$source)
     # calculate new position of code after we concatenate all lines of this block by \n
     b$col = c(b$col, c(
@@ -100,8 +120,6 @@ crack = function(input, text = NULL) {
     b$pos = c(b$pos, pos)
     res[[j[i]]] = b
   }
-
-  set_error_handler(input)
 
   i1 = 0  # code chunk index
   # remove code fences, and extract code in text blocks
@@ -137,7 +155,7 @@ crack = function(input, text = NULL) {
       }
       code = code[-c(1, N)]  # remove fences
       save_pos(b$lines)
-      code = divide_chunk(b$info, code)
+      code = split_chunk(b$info, code)
       b[c('source', 'options', 'comments')] = code[c('code', 'options', 'src')]
       # starting line number of code
       b$code_start = b$lines[1] + 1L + length(b$comments)
@@ -275,7 +293,7 @@ sieve = function(input, text = NULL) {
     res[[length(res) + 1]] <<- el
   }
   partition = function(code) {
-    code = divide_chunk('r', code)
+    code = split_chunk('r', code)
     set_names(code[c('code', 'options', 'src')], c('source', 'options', 'comments'))
   }
   # detect #| and split a block of code into chunks
@@ -446,9 +464,9 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   if (is_file(input) && is.null(opts$wd)) opts$wd = dirname(normalizePath(input))
 
   # store output dir so we can calculate relative paths for plot files later
-  .env$wd.out = normalize_path(
+  .env$wd_out = normalize_path(
     if (is.null(output_base)) {
-      if (is.character(.env$wd.out)) .env$wd.out else '.'
+      if (is.character(.env$wd_out)) .env$wd_out else '.'
     } else dirname(output_base)
   )
   # store the environment and output format
@@ -728,7 +746,7 @@ fuse_code = function(x, blocks) {
   p3 = unlist(p2)  # vector of plot paths
   # get the relative path of the plot directory
   fig.dir = if (length(p3)) tryCatch(
-    sub('^[.]/', '.', paste0(dirname(relative_path(p3[1], .env$wd.out)), '/')),
+    sub('^[.]/', '.', paste0(dirname(relative_path(p3[1], .env$wd_out)), '/')),
     error = function(e) NULL
   )
 
