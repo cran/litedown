@@ -1,3 +1,17 @@
+# CHANGES IN litedown VERSION 0.8
+
+- Added a new chunk option `fig.keep` to select plots to be kept in a code chunk (thanks, @Gabrielforest, #99). See https://yihui.org/litedown/#sec:option-fig for documentation.
+
+- Improved support for LaTeX footnotes. The footnote identifier no longer has to be a number, and the footnote can include arbitrary elements (not necessarily a single paragraph).
+
+- The chunk option `results = 'hide'` will imply `collapse = TRUE`, i.e., when text output is hidden, the source blocks will be merged (thanks, @jangorecki, #87). 
+
+- `fuse(text = '# text')` will be treated as Markdown input instead of R code input (thanks, @chuxinyuan, #102).
+
+- Fixed the bug that the chunk option `fig.path` does not work when it does not contain `/` (thanks, @J-Moravec, #88).
+
+- `get_context('full_input')` gives the full path to the input file of `fuse()` (thanks, @rikivillalba, #104).
+
 # CHANGES IN litedown VERSION 0.7
 
 - `pkg_manual()` will exclude help pages with the keyword `internal` (thanks, @TimTaylor, #78).
