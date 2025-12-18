@@ -1,3 +1,17 @@
+# CHANGES IN litedown VERSION 0.9
+
+- Provided [a new chunk option `filter`](https://yihui.org/litedown/#sec:option-filter) to filter the output elements via a custom function. This makes it possible to re-order output elements. As a result, text output and plots from a `for`-loop can be interleaved (thanks, @reedacartwright, #106).
+
+- The chunk option `attr.source` will default to `.lang` (where `lang` is the engine name) only when it is not provided, i.e., `NULL`. Previously the value `.lang` would still be used when `attr.source` has been provided. Now it's possible to completely override it, e.g., `attr.source = 'language-r'` as in #107 (thanks, @ThomasSoeiro).
+
+- The chunk option `collapse = TRUE` also applies to message blocks, including warnings, messages, and errors (thanks, @ThomasSoeiro, #108).
+
+- `pkg_desc()` gained a new argument `type` and the package description can be generated to either a table or a definition list now.
+
+- The `embed_resources` option was buggy for deferred JS resources. Previously they were moved to `<head>`, but deferred scripts should be executed after the full DOM is ready, so they are moved before `</body>` instead if they are to be embedded.
+
+- Fixed a bug in `pkg_manual()` that may lead to omission of certain items when building TOC.
+
 # CHANGES IN litedown VERSION 0.8
 
 - Added a new chunk option `fig.keep` to select plots to be kept in a code chunk (thanks, @Gabrielforest, #99). See https://yihui.org/litedown/#sec:option-fig for documentation.
