@@ -31,6 +31,14 @@
 #' output file is older than the input.
 #' @param input The root directory of the site, or a vector of input file paths.
 #' @return Output file paths (invisibly).
+#' @examples
+#' # create a minimal book example in the temp dir
+#' d = tempfile()
+#' litedown:::proj_skeleton(d, 'site')
+#' fuse_site(d)
+#' if (interactive()) browseURL(file.path(d, 'index.html'))
+#' # clean up
+#' if (xfun::is_R_CMD_check()) unlink(d, recursive = TRUE)
 #' @export
 fuse_site = function(input = '.') {
   info = NULL; preview = FALSE
@@ -53,22 +61,29 @@ fuse_site = function(input = '.') {
   opts = yaml_field(info$yaml, 'html', c('meta', 'options'))
   opts[['meta']] = merge_list(list(
     css2 = c(site_css, '@site'), js2 = site_js,
-    include_before = nav_menu(info), include_after = format(Sys.Date(), '&copy; %Y')
+    include_before = nav_menu(info, inputs), include_after = format(Sys.Date(), '&copy; %Y')
   ), opts[['meta']])
   opts[['options']] = merge_list(
     list(embed_resources = FALSE, toc = TRUE), opts[['options']]
   )
+  standalone = cfg[['standalone']]
   out = lapply(inputs[i], function(x) {
+    alone = length(standalone) && any(vapply(
+      standalone, function(p) grepl(glob2rx(p), basename(x)), logical(1)
+    ))
     res = if (grepl('[.]md$', x)) {
-      opts = set_site_options(opts, x, root); on.exit(options(opts))
+      if (!alone) {
+        opts = set_site_options(opts, x, root); on.exit(options(opts))
+      }
       mark(x, full_output)
     } else {
       Rscript_call(
         function(x, opts, set, root, flag, output) {
-          set(opts, x, root, list(litedown.roaming = flag))
+          if (!is.null(opts)) set(opts, x, root, list(litedown.roaming = flag))
           litedown::fuse(x, output, envir = globalenv())
         },
-        list(x, opts, set_site_options, root, is_roaming(), full_output),
+        list(x, if (!alone) opts, set_site_options,
+          root, is_roaming(), full_output),
         fail = paste('Failed to run litedown::fuse() on', x)
       )
     }
@@ -110,15 +125,23 @@ filter_outdated = function(x, x2, n) {
 }
 
 # build a nav menu from filenames under root directory
-nav_menu = function(info) {
+nav_menu = function(info, inputs) {
   if (is.na(info$root)) return('[Home](/index.html)')
-  files = find_input(info$root, FALSE, info$yaml[['site']][['pattern']])
-  b = basename(files)
-  x = gsub('[-_]', ' ', sans_ext(ifelse(is_index(b), 'home', b)))
-  sprintf(
-    '[%s](/%s)', tools::toTitleCase(x),
+  root = sub('/+$', '', info$root)  # strip any trailing slash for reliable dirname() comparison
+  b = basename(inputs[dirname(inputs) == root])
+  links = sprintf(
+    '[%s](/%s)', menu_name(sans_ext(ifelse(is_index(b), 'home', b))),
     if (is_roaming()) paste0(b, '?preview=2') else with_ext(b, '.html')
   )
+  # add subdirs that already have an index.html (same exclusion as find_input)
+  sub_dirs = list.dirs(root, recursive = FALSE)
+  sub_dirs = sub_dirs[file.exists(file.path(sub_dirs, 'index.html'))]
+  dnames = basename(sub_dirs)
+  c(links, sprintf('[%s](/%s/)', menu_name(dnames), dnames))
+}
+
+menu_name = function(x) {
+  tools::toTitleCase(gsub('[-_]', ' ', x))
 }
 
 #' Fuse multiple R Markdown documents to a single output file
@@ -174,6 +197,14 @@ nav_menu = function(info) {
 #'   `input` field under `book`).
 #' @return An output file path or the output content, depending on the `output`
 #'   argument.
+#' @examples
+#' # create a minimal book example in the temp dir
+#' d = tempfile()
+#' litedown:::proj_skeleton(d, 'book')
+#' fuse_book(d)
+#' if (interactive()) browseURL(file.path(d, 'index.html'))
+#' # clean up
+#' if (xfun::is_R_CMD_check()) unlink(d, recursive = TRUE)
 #' @export
 fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
   # when input is c(dir, file1, file2, ...), we find book files under dir, but
@@ -270,14 +301,20 @@ yml_config = function(d) {
   }
 }
 
+proj_skeleton = function(path, type = 'book') {
+  dir_create(path)
+  file.copy(list.files(pkg_file('rstudio', type), full.names = TRUE), path)
+  invisible(path)
+}
+
 site_pattern = '[.][Rq]?md$'
 
 # find input files under a directory
 find_input = function(d, deep = grepl('/$', d), pattern = NULL) {
   if (!is.character(pattern)) pattern = site_pattern
   x = list.files(d, pattern, full.names = TRUE, recursive = deep)
-  # exclude .* and _* files
-  x = x[!grepl('^[_.]', basename(x))]
+  # exclude .* and _* files/dirs
+  x = x[!grepl('(^|/)[_.]', gsub('^([.]+/)+', '', x))]
   # exclude readme
   x = x[tolower(basename(sans_ext(x))) != 'readme']
   # for .md files, don't include them if they have .Rmd/.qmd files

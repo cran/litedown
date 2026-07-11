@@ -370,6 +370,19 @@ convert_knitr = function(input) {
 #' names(litedown::get_context())  # all available items
 get_context = function(item = NULL) if (is.null(item)) .env else .env[[item]]
 
+#' Exit `fuse()` early
+#'
+#' Stop [fuse()] from processing the remaining code chunks and text blocks. This
+#' function is meant to be called inside a code chunk to end the document early.
+#' @param append A character string to be appended to the fuse output after the
+#'   current code chunk.
+#' @return Invisible `NULL`.
+#' @export
+fuse_exit = function(append = '') {
+  .env$exit = append
+  invisible()
+}
+
 # return a string to indicate the error location
 get_loc = function(label) {
   l = .env$source_pos; n = length(l)
@@ -430,6 +443,13 @@ block_order = function(res, N = length(res)) {
 #'   `litedown.progress.output` (the default is [stderr()]).
 #' @note For `fuse()`, you can generate the intermediate Markdown output via
 #'   `output = '.md'` or `output = 'markdown'` without further calling `mark()`.
+#'
+#'   If the global option `litedown.tinypng` is set to `TRUE` and the
+#'   \pkg{tinyimg} package is installed, PNG plots generated from code chunks
+#'   will be optimized by [tinyimg::tinypng()] to reduce file size. To optimize
+#'   other PNG files (e.g., images that you manually include in the document),
+#'   you may call `tinyimg::tinypng('.')` to optimize all PNG files under the
+#'   current directory.
 #' @seealso [sieve()], for the syntax of R scripts to be passed to [fuse()].
 #' @export
 #' @examples
@@ -463,6 +483,9 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   # restore and clean up some objects on exit
   opts2 = as.list(opts); on.exit(reactor(opts2), add = TRUE)
   oenv = as.list(.env); on.exit(reset_env(oenv, .env), add = TRUE)
+  # use default fig.path/cache.path instead of inheriting (#127)
+  nested = isTRUE(.env$in_fuse); .env$in_fuse = TRUE
+  if (nested) reactor(fig.path = NULL, cache.path = NULL)
 
   # set working directory if unset
   if (is_file(input) && is.null(opts$wd)) opts$wd = dirname(normalizePath(input))
@@ -590,6 +613,11 @@ fiss = function(input, output = '.R', text = NULL) {
     }
     if (!isFALSE(time)) record_time(Sys.time() - t1, b$lines, nms[k])
     p_bar(p_clr)
+    if (!is.null(.env$exit)) {
+      res = c(res[seq_len(k)], .env$exit)
+      .env$exit = NULL
+      break
+    }
   }
   k = n + 1
   res
@@ -759,8 +787,15 @@ fuse_code = function(x, blocks) {
   # however, when cache = true, we shouldn't clean up plots since they won't be
   # regenerated next time (then they won't be found)
   if (!isTRUE(opts$cache)) .env$plot_files = c(.env$plot_files, p3)
-  # recycle alt and attributes for all plots
   pn = length(p3)
+  if (pn && getOption('litedown.tinypng', FALSE)) {
+    if (xfun::loadable('tinyimg')) {
+      tinyimg::tinypng(grep('[.]png$', p3, value = TRUE))
+    } else message(
+      "The 'tinyimg' package is not available; PNG images won't be optimized."
+    )
+  }
+  # recycle alt and attributes for all plots
   if (pn && is.null(alt)) {
     # reminder about missing alt text if this option is set to TRUE
     if (getOption('litedown.fig.alt', FALSE)) message(
@@ -1237,6 +1272,36 @@ eng_js = function(x, inline = FALSE, ...) {
   }
 }
 
+# the exec engine: run arbitrary commands via system2() and capture output
+eng_exec = function(x, inline = FALSE, ...) {
+  opts = reactor()
+  cmd = opts$command %||% opts$engine
+  if (opts$engine == 'exec' && is.null(opts$command))
+    stop("The 'exec' engine requires the chunk option 'command'.")
+  # write code to a temp file; powershell requires .ps1 extension, others need none
+  ext = opts$ext %||% if (cmd == 'powershell') 'ps1' else NULL
+  f = if (is.null(ext)) tempfile() else with_ext(tempfile(), ext)
+  on.exit(unlink(f), add = TRUE)
+  write_utf8(x$source, f)
+  # build args: [args1] + file + [args2]; powershell needs -File before the path
+  default_args = if (cmd == 'powershell') c('-File', f) else f
+  a = c(opts$args1, default_args, opts$args2)
+  out = tryCatch(
+    system2(cmd, shQuote(a), stdout = TRUE, stderr = TRUE),
+    error = function(e) {
+      if (is.na(opts$error)) stop(e)
+      if (isFALSE(opts$error)) return(character(0))
+      paste('Error in running command', cmd, ':', conditionMessage(e))
+    }
+  )
+  # handle non-zero exit status based on the error chunk option
+  if (!is.null(attr(out, 'status'))) {
+    if (is.na(opts$error)) stop(one_string(out))
+    if (isFALSE(opts$error)) out = character(0)
+  }
+  if (inline) one_string(out) else list(new_source(x$source), new_output(out))
+}
+
 #' Language engines
 #'
 #' Get or set language engines for evaluating code chunks and inline code.
@@ -1261,7 +1326,8 @@ eng_js = function(x, inline = FALSE, ...) {
 engines = new_opts()
 engines(
   r = eng_r, md = eng_md, mermaid = eng_mermaid, embed = eng_embed,
-  css = eng_css, js = eng_js
+  css = eng_css, js = eng_js,
+  exec = eng_exec, sh = eng_exec, bash = eng_exec, zsh = eng_exec, powershell = eng_exec
 )
 
 #' @export

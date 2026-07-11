@@ -47,6 +47,21 @@ is_lang = function(x) is.symbol(x) || is.language(x)
 uapply = function(..., recursive = TRUE) unlist(lapply(...), recursive = recursive)
 .mapply = function(fun, ...) base::.mapply(fun, list(...), NULL)
 
+# convert the system locale to a BCP 47 language tag for use in the HTML lang attribute
+locale_lang = function() {
+  lc = Sys.getlocale('LC_CTYPE')
+  # remove encoding part (e.g., ".UTF-8", ".1252")
+  lc = sub('[.][^.]*$', '', lc)
+  # extract language (and optional region) from POSIX-style locale (case-insensitive)
+  m = regmatches(lc, regexpr('^[a-zA-Z]{2,3}([_-][a-zA-Z]{2,3})?', lc))
+  if (length(m) == 0) return('')
+  # normalize to BCP 47: language lowercase, region uppercase, hyphen separator
+  parts = strsplit(m, '[_-]')[[1]]
+  parts[1] = tolower(parts[1])
+  if (length(parts) > 1) parts[2] = toupper(parts[2])
+  paste(parts, collapse = '-')
+}
+
 #' Convert some ASCII strings to HTML entities
 #'
 #' Transform ASCII strings `(c)` (copyright), `(r)` (registered trademark),
@@ -263,6 +278,7 @@ assets = t(data.frame(
   pages = c('paginate HTML for printing', '@pages', '@pages'),
   'right-quote' = c('right-align quote footers', NA, '@right-quote'),
   snap = c('snap slides', '@snap', '@snap'),
+  'snap-clean' = c('clean slide theme', '@snap-clean', NA),
   tabsets = c('create tabsets from bullet lists or sections', '@tabsets', '@tabsets'),
   'toc-highlight' = c('highlight TOC items on scroll', NA, '@toc-highlight'),
   row.names = c('description', 'css', 'js'), check.names = FALSE
@@ -283,7 +299,7 @@ feature_form = function(path) {
     ),
     '<p><b>Select HTML features</b></p>', '<p style="columns:20em;">',
     sprintf(
-      '<label><input name="%s" type="checkbox" /> <a href="https://yihui.org/litedown/#sec:%s" target="_blank"><code>%s</code></a>: %s</label>',
+      '<label><input name="%s" type="checkbox" /> <a href="https://pkg.yihui.org/litedown/book/#sec:%s" target="_blank"><code>%s</code></a>: %s</label>',
       nms, nms, nms, html_escape(assets[, 'description'])
     ), '</p>'
   ))
@@ -741,7 +757,7 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
   match_replace(x, r, function(y) {
     z = sub(r, s, y, perl = TRUE)
     if (format == 'html') {
-      z = gsub('[\U201c\U201d]', '"', z)
+      z = gsub('[\u201c\u201d]', '"', z)
     } else {
       z = gsub('=``', '="', z, fixed = TRUE)
       z = gsub("''( |\\\\})", '"\\1', z)
@@ -906,7 +922,7 @@ number_refs = function(x, r, katex = TRUE) {
   db = list()  # element numbers
 
   # first, find numbered section headings
-  r2 = '<h[1-6][^>]*? id="([^"]+)"[^>]*><span class="section-number[^"]*">([0-9.]+)</span>'
+  r2 = '<h[1-6][^>]*? id="([^"]+)"[^>]*><span class="section-number[^"]*">([A-Z0-9.]+)</span>'
   m = match_all(x, r2)[[1]]
   if (length(m)) {
     ids = m[2, ]
@@ -1378,7 +1394,7 @@ resolve_url = function(url, code, ext, encode = TRUE) {
   } else if (ext == 'js') {
     # the literal sequence '</script>' inside <script> tag needs to be escaped;
     # to avoid problems in general caused by closing tags, we escape them all
-    code = gsub('</', '<\\/', code, fixed = TRUE)
+    code = gsub('</script>', '<\\/script>', code, fixed = TRUE)
   }
   code
 }

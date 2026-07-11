@@ -37,7 +37,7 @@
 #'   to fill out the template by their names and values, e.g., `list(title =
 #'   ...)` will replace the `$title$` variable in the template. See the Section
 #'   \dQuote{YAML metadata} [in the
-#'   documentation](https://yihui.org/litedown/#sec:yaml-metadata) for supported
+#'   documentation](https://pkg.yihui.org/litedown/book/#sec:yaml-metadata) for supported
 #'   variables.
 #' @return The output file path if output is written to a file, otherwise a
 #'   character vector of the rendered output (wrapped in [xfun::raw_string()]
@@ -95,6 +95,11 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     names(Filter(isTRUE, options)), commonmark::list_extensions()
   )
 
+  # build PDF for LaTeX output when the output file is .pdf or latex_engine is specified
+  is_pdf = is_output_file(output) && format == 'latex' &&
+    (is.character(latex_engine <- yaml_field(yaml, format, 'latex_engine')) ||
+       file_ext(output) == 'pdf')
+
   # whether to write YAML metadata to output
   keep_yaml = isTRUE(options[['keep_yaml']])
 
@@ -105,7 +110,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   # if not set there, check global option; if not set, disable template if no
   # YAML was provided (i.e., generate a fragment)
   if (is.null(template))
-    template = get_option('template', format, full || 'yaml' %in% names(part))
+    template = get_option('template', format, full || 'yaml' %in% names(part) || is_pdf)
   # template = FALSE means no template; other values mean the default template
   if (!is.character(template)) template = if (!isFALSE(template))
     pkg_file('resources', sprintf('litedown.%s', format))
@@ -156,6 +161,16 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       p <<- prose_index(text)
     }
   })
+  # ensure a blank line after an HTML tag if followed by a code block,
+  # otherwise the code block may be considered part of HTML, e.g.,
+  # for <p></p>\n```\n```, the code block after </p> won't be recognized
+  find_prose()
+  if (length(i <- grep('</[a-z0-9]+>\\s*$', text[p]))) {
+    # if the next line is not prose but code block, append \n
+    k = p[!(p[i] + 1) %in% p]
+    if (length(k)) text[k] = paste0(text[k], '\n')
+  }
+
   # superscript and subscript; for now, we allow only characters alnum|*|(|) for
   # script text but can consider changing this rule upon users' request
   r2 = '(?<!`)\\^([[:alnum:]*(),.]+?)\\^(?!`)'
@@ -399,21 +414,15 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
 
   ret = sub('\n$', '', ret)
   if (is_output_file(output)) {
-    # build PDF for LaTeX output when the output file is .pdf
-    is_pdf = FALSE
-    if (format == 'latex') {
-      latex_engine = yaml_field(yaml, format, 'latex_engine')
-      if (is.character(latex_engine) || file_ext(output) == 'pdf') {
-        is_pdf = TRUE
-        tex = with_ext(output, '.tex')
-        if (!isTRUE(yaml_field(yaml, format, 'keep_tex')))
-          on.exit(file.remove(tex), add = TRUE)
-        write_utf8(ret, tex)
-        output = tinytex::latexmk(
-          tex, latex_engine %||% 'xelatex',
-          if (pkg_cite == 'biblatex') 'biber' else 'bibtex'
-        )
-      }
+    if (is_pdf) {
+      tex = with_ext(output, '.tex')
+      if (!isTRUE(yaml_field(yaml, format, 'keep_tex')))
+        on.exit(file.remove(tex), add = TRUE)
+      write_utf8(ret, tex)
+      output = tinytex::latexmk(
+        tex, latex_engine %||% 'xelatex',
+        if (pkg_cite == 'biblatex') 'biber' else 'bibtex'
+      )
     }
     # for RStudio to capture the output path when previewing the output
     if (is_rmd_preview()) message('\nOutput created: ', output)
@@ -427,6 +436,7 @@ build_output = function(format, options, template, meta, ...) {
   if (format == 'html') {
     defaults = list(
       'css' = 'default',
+      'lang' = locale_lang(),
       'plain-title' = I(str_trim(commonmark::markdown_text(meta[['title']])))
     )
     for (i in setdiff(names(defaults), names(meta))) meta[[i]] = defaults[[i]]
@@ -465,7 +475,7 @@ yaml_text = function(part, text) if (length(l <- part$lines) == 2) text[l[1]:l[2
 #' by default are marked by a `+` prefix, and those disabled by default are
 #' marked by `-`.
 #'
-#' See <https://yihui.org/litedown/#sec:markdown-options> for the full list of
+#' See <https://pkg.yihui.org/litedown/book/#sec:markdown-options> for the full list of
 #' options and their documentation.
 #' @return A character vector of all available options.
 #' @export
