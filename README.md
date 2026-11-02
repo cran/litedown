@@ -10,76 +10,138 @@
 
 <!-- badges: start -->
 
-[![R-CMD-check](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml)
 [![CRAN
 release](https://www.r-pkg.org/badges/version/litedown)](https://cran.r-project.org/package=litedown)
 [![litedown on
 r-universe](https://yihui.r-universe.dev/badges/litedown)](https://yihui.r-universe.dev/litedown)
+[![R-CMD-check](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/yihui/litedown/actions/workflows/R-CMD-check.yaml)
+[![Build site](https://github.com/yihui/litedown/actions/workflows/litedown-site.yml/badge.svg)](https://github.com/yihui/litedown/actions/workflows/litedown-site.yml)
 [![Codecov test
 coverage](https://codecov.io/gh/yihui/litedown/branch/main/graph/badge.svg)](https://app.codecov.io/gh/yihui/litedown?branch=main)
 
 <!-- badges: end -->
 
-This package provides a trimmed-down and reimagined implementation of [R
-Markdown](https://rmarkdown.rstudio.com). It is much more lightweight, at the
-price of dropping some features. It does not depend on the R package **knitr**
-or the system package Pandoc.
+**litedown** turns Markdown and R Markdown into HTML and LaTeX/PDF, with no
+**knitr** and no Pandoc. It imports only one R package, **xfun**, and
+renders Markdown with a bundled and patched copy of the
+[cmark-gfm](https://github.com/github/cmark-gfm) C library.
 
-Please consider this package experimental for now. The documentation is also
-very incomplete and still under development.
+-   **Computing**: run code chunks and inline code in R, or in
+    other languages via engines such as JavaScript, CSS, Mermaid, and shell
+    commands. Chunk options control code, text output, figures, tables,
+    caching, and even the order of execution.
 
-## Usage
+-   **Markdown**: GFM plus math, footnotes, superscripts/subscripts, raw
+    HTML/LaTeX blocks, element attributes, cross-references, citations, and
+    callouts.
 
-### Installation
+-   **Output**: single HTML documents (with resources embedded if you want),
+    LaTeX and PDF, and lightweight HTML articles, slides, and paged HTML (for
+    print), styled with small vanilla CSS/JS files from
+    [lite.js](https://github.com/yihui/lite.js).
 
-At the moment, you are recommended to install the development version from
-r-universe:
+-   **Projects**: books and websites from a directory of documents with a
+    `_litedown.yml`, including websites for R packages via `pkg_site()`.
+
+-   **Workflow**: `roam()` previews and renders documents in a browser, with
+    live reload, so you do not need a `Knit` button.
+
+## Installation
 
 ``` r
-install.packages('litedown', repos = c('https://yihui.r-universe.dev', 'https://cloud.r-project.org'))
+install.packages('litedown')
 ```
 
-### Markdown rendering
+The development version is available from r-universe:
 
-The function `litedown::mark()` is based on the R package
-[**commonmark**](https://github.com/r-lib/commonmark), and renders Markdown to
-various output formats supported by **commonmark**, which are primarily HTML and
-LaTeX. MS Office formats are not supported.
+``` r
+install.packages('litedown', repos = 'https://yihui.r-universe.dev')
+```
 
-### Knitting
+## A quick look
 
-R Markdown documents need to be knitted to Markdown before being rendered to a
-target output format. The function `litedown::fuse()` plays a role similar to
-`knitr::knit()` and `rmarkdown::render()`. It fuses program code with
-narratives, i.e., it executes code in the source document and interweaves
-results with narratives in the output document.
+Save this as `hello.Rmd`:
 
-### Previewing
+````` markdown
+---
+title: Hello litedown
+output: html
+---
 
-Try `litedown::roam()`.
+```{r}
+x = 2
+```
+
+The area of a circle with radius `{r} x` is `{r} pi * x^2`.
+`````
+
+Then render it:
+
+``` r
+litedown::fuse('hello.Rmd')  # hello.Rmd -> hello.html
+litedown::roam()             # or preview and render in a browser
+```
+
+## Main functions
+
+| Function                                  | What it does                                  |
+|:------------------------------------------|:----------------------------------------------|
+| `fuse()`                                  | executes code in an R Markdown document, then renders it via `mark()` (like `rmarkdown::render()`) |
+| `mark()`                                  | renders Markdown to HTML, LaTeX, etc. (like Pandoc) |
+| `fiss()`                                  | extracts code from a document (like `knitr::purl()`) |
+| `roam()`                                  | previews and renders documents in a browser   |
+| `fuse_book()`, `fuse_site()`, `pkg_site()` | build books, websites, and package sites     |
+
+If you do not compute in your documents, `mark()` alone is enough.
+
+## Learn more
+
+Visit the package site, <https://pkg.yihui.org/litedown/>, which has the
+manual, the book *litedown: R Markdown Reimagined*, and examples.
 
 ## Scope
 
-We want to limit the scope of this package. Most planned features have been
+I try to keep the R package small, and most planned features have been
 (re-)implemented so far, such as reports, slides, books, websites (including
 package sites), and paged HTML documents, etc. See the set $R$ below:
 
 $$\mathrm{litedown} = \min{\{R\}} + \{D_i\} - \{D_e\} + \{J\}$$
 
--   $R$ = **knitr** + **evaluate** + **rmarkdown** + **bookdown** +
-    **blogdown** + **pagedown** + **pkgdown** + **xaringan** + **tufte** +
-    **distill** + **htmlwidgets**
+-   $R$ = [**knitr**](https://github.com/yihui/knitr) +
+    [**evaluate**](https://github.com/r-lib/evaluate) +
+    [**rmarkdown**](https://github.com/rstudio/rmarkdown) +
+    [**bookdown**](https://github.com/rstudio/bookdown) +
+    [**blogdown**](https://github.com/rstudio/blogdown) +
+    [**pagedown**](https://github.com/rstudio/pagedown) +
+    [**pkgdown**](https://github.com/r-lib/pkgdown) +
+    [**xaringan**](https://github.com/yihui/xaringan) +
+    [**tufte**](https://github.com/rstudio/tufte) +
+    [**distill**](https://github.com/rstudio/distill) +
+    [**htmlwidgets**](https://github.com/ramnathv/htmlwidgets)
 
--   $D_i$ = (internal dependencies) **commonmark** + **xfun**
+-   $D_i$ = (internal dependencies) **xfun**
 
 -   $D_e$ = (external dependencies) Pandoc + Bootstrap + jQuery + GitBook +
     Hugo + paged.js + remark.js + tufte.css + distill.js/.css + ...
 
 -   $J$ = Lightweight [vanilla JavaScript/CSS](https://github.com/yihui/lite.js)
 
-Please feel free to file feature requests anyway, but we may be a little
-conservative when considering them (we will take votes into consideration, so
-please upvote features you like).
+Much of the functionality lives in CSS/JS, which makes **litedown** highly
+extensible and customizable: see [Chapter 5 of the
+book](https://pkg.yihui.org/litedown/book/#chp:assets) for how to use the
+default assets and write your own. You are welcome to write your own CSS/JS, or
+contribute yours to [**lite.js**](https://github.com/yihui/lite.js) so that
+everyone can use it.
+
+Feature requests are welcome, too. I will take votes into consideration, so
+please upvote the features you like.
+
+## Acknowledgments
+
+**litedown** was directly inspired by the packages in the set $R$ above. I wrote
+or co-wrote most of them, and learned a lot from the rest. Thanks to all their
+authors and contributors, and to the users whose questions, bug reports, and
+feedback over the years shaped the design of this package.
 
 ## License
 

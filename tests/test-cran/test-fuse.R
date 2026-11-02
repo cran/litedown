@@ -21,6 +21,19 @@ assert('code blocks after asis HTML output are rendered correctly (regression)',
   (as.character(gsub('.*<pre><code class="language-r">1:2.*', '', out)) %==% '')
 })
 
+assert('fill_label() leaves an unmatched `<...>` alone (regression)', {
+  # a `<...>` in chunk source that matches no chunk label previously sent
+  # fill_label() into infinite recursion (node stack overflow); it must pass
+  # through verbatim, while a real `<label>` still expands to that chunk source
+  src = paste(c(
+    '```{r lab}', '#| eval: false', 'secret_val', '```', '',
+    '```{js}', 'const a = `<lab>`, b = `<${s}>`;', '```'
+  ), collapse = '\n')
+  out = as.character(fuse(text = src, output = 'markdown'))
+  (any(grepl('secret_val', out)))          # real label expanded
+  (any(grepl('${s}', out, fixed = TRUE)))  # unmatched marker preserved
+})
+
 assert('fuse() fig.path option controls plot file location', {
   src = c(
     '---', 'output:', '  html:', '    options:', '      embed_resources: false',
@@ -75,4 +88,42 @@ assert('fiss() respects purl = FALSE chunk option', {
   src = c('```{r, purl=FALSE}', 'secret = 1', '```', '```{r}', 'public = 2', '```')
   out = fiss(I(src))
   (c('public = 2', '') %==% as.character(out))
+})
+
+# fuse() code chunk / inline output is snapshot-tested in test-fuse.md; the
+# asserts below cover behavior that isn't a simple output comparison (S3
+# classes, and the register/restore lifecycle of a custom engine).
+
+assert('engines() registers a custom engine and restores the old value', {
+  (is.null(engines('foo')))
+  old = engines(foo = function(x, inline = FALSE, ...) 'x')
+  (is.function(engines('foo')))
+  engines(old)  # restore
+  (is.null(engines('foo')))
+})
+
+assert('raw_text() wraps content in a raw block for a given format', {
+  x = one_string(as.character(raw_text('<b>hi</b>', 'html')))
+  (inherits(raw_text('<b>hi</b>', 'html'), 'record_asis'))
+  (grepl('{=html}', x, fixed = TRUE))
+  (grepl('<b>hi</b>', x, fixed = TRUE))
+  # no format leaves the content unfenced
+  (as.character(raw_text('plain')) %==% 'plain')
+})
+
+assert('the pele and mermaid engines output diagram code blocks', {
+  (is.function(engines('pele')))
+  for (e in c('pele', 'mermaid')) {
+    x = fuse(c(sprintf('```{%s, echo = FALSE}', e), 'flowchart LR', '  A --> B', '```'), output = 'markdown')
+    (has_match(x, sprintf('``` ?%s\n', e)))
+    h = mark(x)
+    (has_match(h, sprintf('<pre class="%s">', e)))
+  }
+})
+
+assert('a pinned diagram library is not added twice but its renderer is', {
+  x = '---\ntitle: T\n---\n\n```pele\nflowchart LR\n  A --> B\n```'
+  h = mark(x, meta = list(js = '@npm/pele@1.8.0/dist/pele.global.js'))
+  (has_match(h, 'render-pele'))
+  (length(gregexpr('pele[.]global', h)[[1]]) %==% 1L)
 })

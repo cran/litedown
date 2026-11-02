@@ -4,12 +4,14 @@
   // find a container that has at least n "slides"
   function findContainer(s, n = 1) {
     if (p.querySelectorAll(s).length >= n) return true;
-    // if body doesn't contain headings or <hr>s, look into children
-    for (let i = 0; i < p.children.length; i++) {
-      if (p.children[i].querySelectorAll(s).length >= n) {
-        p = p.children[i]; break;
+    // if body doesn't contain headings or <hr>s, look into children (and their
+    // children, e.g., <main> > <article>)
+    (function find(el) {
+      for (const c of el.children) {
+        if (c.querySelectorAll(s).length >= n) return p = c;
       }
-    }
+      return [...el.children].some(find);
+    })(p);
     return false;
   }
   function newEl(tag, cls) {
@@ -73,7 +75,7 @@
     setTimeout(() => el?.scrollIntoView(), 100);
   }
   const dE = d.documentElement, dC = d.body.classList;
-  const slides = d.querySelectorAll('div.slide'), N = slides.length,
+  const slides = d.querySelectorAll('.slide'), N = slides.length,
         tm = d.querySelector('span.timer'), fn = d.querySelector('.footnotes');
   slides.forEach((s, i) => {
     // slide header, main body, and footer
@@ -130,10 +132,10 @@
     if (!dC.contains('slide-mode')) return;  // set timer only in slide mode
     let t = (new Date() - t0);
     if (t1) t = t1 - t;
-    const t2 = new Date(Math.abs(t)).toISOString().substr(11, 8).replace(/^00:/, '');
+    const t2 = new Date(Math.abs(t)).toISOString().slice(11, 19).replace(/^00:/, '');
     tms.forEach(el => {
       el.innerText = t2;
-      if (t < 0) el.style.opacity = Math.ceiling(t/1000) % 2;
+      if (t < 0) el.style.opacity = Math.ceil(t/1000) % 2;
     });
   }
   function toggleView(e) {

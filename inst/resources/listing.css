@@ -1,24 +1,33 @@
 body {
   max-width: none;
 }
-.body, ul {
+.boxes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(30em, 100%), 1fr));
+}
+ul {
   display: flex;
   flex-wrap: wrap;
+  width: 100%;
+  padding-left: .5em;
 }
 h1 {
   text-align: left;
   font-size: 1em;
 }
 .box {
-  width: 30em;
-  flex-grow: 1;
   margin: .5em;
   & > .name {
-    font-size: 1em;
     padding: 1px .5em;
     p {
       margin: .5em 0;
     }
+  }
+  em {
+    font-size: .9em;
+  }
+  em:not(:hover), pre code:not(:hover) {
+    opacity: .7;
   }
   .run {
     float: right;
@@ -33,17 +42,16 @@ pre > code:not([class]) {
 pre, pre:hover {
   white-space: pre;
 }
-ul {
-  width: 100%;
-  padding-left: .5em;
-}
 li {
   display: inline-block;
   margin-right: 2em;
 }
-em, pre code {
-  font-size: .8em;
+.muted {
+  opacity: .6;
 }
-em:not(:hover), pre code:not(:hover) {
-  opacity: .7;
+[hidden] {
+  display: none !important;
+}
+.box > .name time, li time {
+  cursor: help;
 }

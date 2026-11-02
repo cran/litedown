@@ -4,16 +4,6 @@ reset_env = function(x = list(), envir) {
   list2env(x, envir)
 }
 
-# counters for elements to be cross-referenced (e.g., fig, tab)
-counters = local({
-  db = NULL
-  list(
-    get = function() db,
-    inc = function(name) db[[name]] <<- (db[[name]] %||% 0L) + 1L,
-    del = function(name) db <<- NULL
-  )
-})
-
 # use PCRE by default (which seems to handle multibyte chars better)
 gregexpr = function(..., perl = TRUE) base::gregexpr(..., perl = perl)
 attr = function(...) base::attr(..., exact = TRUE)  # exact attr() please
@@ -109,22 +99,34 @@ merge_list = function(...) {
   res
 }
 
-CHARS = c(letters, LETTERS, 0:9, '!', ',', '/', ':', ';', '=', '@')
-
-# generate a random string that is not present in provided text
-id_string = function(text, lens = c(5:10, 20), times = 20) {
-  for (i in lens) {
-    for (j in seq_len(times)) {
-      id = paste(sample(CHARS, i, replace = TRUE), collapse = '')
-      if (length(grep(id, text, fixed = TRUE)) == 0) return(id)
-    }
-  }
-  # failure should be very rare
-  stop('Failed to generate a unique ID string. You may try again.')
-}
+# match_full() and match_all() split `x` into lines before matching:
+# gregexpr()/regmatches() map each match's byte offset to a character offset by
+# walking the string from the start, which is O(n^2) on a long multibyte string
+# with many matches; splitting on newlines first bounds each conversion to one
+# short line, making the whole pass linear. This is transparent because their
+# callers' regexes never match across a newline, so per-line matching yields the
+# same matches. match_replace() also supports this via `lines = TRUE`, but it
+# rejoins the lines afterwards, so it is opt-in (only line-safe regexes qualify).
 
 # a shorthand for gregexpr() and regmatches()
-match_replace = function(x, r, replace = identity, ...) {
+match_replace = function(x, r, replace = identity, ..., lines = FALSE) {
+  if (lines) {
+    if (length(x) == 0) return(x)  # keep length-0 input as-is (don't inflate to "")
+    v = split_lines(x)
+    m = gregexpr(r, v, ...)
+    z = regmatches(v, m)
+    flat = unlist(z)
+    # replace() sees ALL matches at once (not per line) so it can keep
+    # cross-match state (e.g. de-duping ids, running counters); relist the
+    # result back per line to write matches back with regmatches<-
+    if (length(flat)) {
+      flat = replace(flat)
+      end = cumsum(lengths(z)); start = end - lengths(z) + 1L
+      regmatches(v, m) = lapply(seq_along(z), function(i)
+        if (length(z[[i]])) flat[start[i]:end[i]] else z[[i]])
+    }
+    return(one_string(v))
+  }
   m = gregexpr(r, x, ...)
   regmatches(x, m) = lapply(regmatches(x, m), function(z) {
     if (length(z)) replace(z) else z
@@ -132,22 +134,27 @@ match_replace = function(x, r, replace = identity, ...) {
   x
 }
 
-# gregexec() + regmatches() to greedy-match all substrings in regex groups
+# gregexec() + regmatches() to greedy-match all substrings in regex groups;
+# returns a single matrix (full match in row 1, capture groups in the rest)
 match_all = function(x, r, ...) {
-  regmatches(x, base::gregexec(r, x, ...))
+  do.call(cbind, regmatches(v <- split_lines(x), base::gregexec(r, v, ...)))
 }
 # for R < 4.1.0
 if (!exists('gregexec', baseenv(), inherits = TRUE)) match_all = function(x, r, ...) {
-  lapply(match_full(x, r, ...), function(z) {
+  res = lapply(regmatches(v <- split_lines(x), gregexpr(r, v, ...)), function(z) {
     if (length(z)) do.call(cbind, match_one(z, r, ...)) else z
   })
+  do.call(cbind, res)
 }
 
 # regexec() + regmatches() to match the regex once and capture substrings
 match_one = function(x, r, ...) regmatches(x, regexec(r, x, ...))
 
-# gregexpr() + regmatches() to match full strings but not substrings in regex groups
-match_full = function(x, r, ...) regmatches(x, gregexpr(r, x, ...))
+# gregexpr() + regmatches() to match full strings but not substrings in regex
+# groups; returns a flat vector of matches (all callers want that)
+match_full = function(x, r, ...) {
+  unlist(regmatches(v <- split_lines(x), gregexpr(r, v, ...)))
+}
 
 # if `text` is NULL and `input` is a file, read it; otherwise use the `text`
 # argument as input
@@ -231,10 +238,9 @@ sub_var = function(x, name, value, ...) {
 
 # unescape HTML code
 restore_html = function(x) {
-  x = gsub('&quot;', '"', x, fixed = TRUE)
-  x = gsub('&amp;', '&', x, fixed = TRUE)
-  x = gsub('&lt;', '<', x, fixed = TRUE)
-  x = gsub('&gt;', '>', x, fixed = TRUE)
+  # the order matters (&amp; is unescaped before &lt; and &gt;)
+  e = c(quot = '"', amp = '&', lt = '<', gt = '>')
+  for (i in names(e)) x = gsub(sprintf('&%s;', i), e[[i]], x, fixed = TRUE)
   x
 }
 
@@ -252,9 +258,9 @@ restore_html = function(x) {
 #' @examples
 #' litedown:::assets[, -1]
 #' # add features
-#' litedown::vest(c('copy-button', 'tabsets'))
+#' litedown::vest(c("copy-button", "tabsets"))
 #' # add css/js directly
-#' litedown::vest(css = '@tabsets', js = c('@tabsets', '@fold-details'))
+#' litedown::vest(css = "@tabsets", js = c("@tabsets", "@fold-details"))
 vest = function(feature = NULL, css = NULL, js = NULL) {
   if (length(feature)) {
     a = assets[feature, , drop = FALSE]
@@ -263,18 +269,20 @@ vest = function(feature = NULL, css = NULL, js = NULL) {
   new_asis(c(resolve_files(css, 'css'), resolve_files(js, 'js')), raw = TRUE)
 }
 
+# default comes first because the order matters (CSS/JS are loaded in this order)
 assets = t(data.frame(
-  article = c('side notes, floats, and full-width elements for articles', '@article', '@sidenotes, @appendix'),
+  default = c('default CSS', '@default', NA),
+  article = c('side notes, floats, and full-width elements for articles', '@article', '@sidenotes'),
   book = c('cover and chapter pages for books', '@book', NA),
   callout = c('frames with legends', '@callout', '@callout'),
   'center-img' = c('center images in paragraphs', NA, '@center-img'),
   'chapter-toc' = c('add TOC to each chapter', NA, '@chapter-toc'),
   'copy-button' = c('copy buttons', '@copy-button', '@copy-button'),
-  default = c('default CSS', '@default', NA),
   'external-link' = c('open external links in new windows', NA, '@external-link'),
   'fold-details' = c('fold elements (e.g., code blocks)', NA, '@fold-details'),
   'heading-anchor' = c('add anchor links to headings', '@heading-anchor', '@heading-anchor'),
   'key-buttons' = c('style keyboard shortcuts', '@key-buttons', '@key-buttons'),
+  'nav-highlight' = c('highlight the current page in the site navigation', '@site', '@nav-highlight'),
   pages = c('paginate HTML for printing', '@pages', '@pages'),
   'right-quote' = c('right-align quote footers', NA, '@right-quote'),
   snap = c('snap slides', '@snap', '@snap'),
@@ -284,6 +292,14 @@ assets = t(data.frame(
   row.names = c('description', 'css', 'js'), check.names = FALSE
 ))
 
+# feature presets for new files in roam()
+feature_presets = list(
+  Blank = character(),
+  Article = c('default', 'article'),
+  Slides = c('default', 'snap'),
+  Book = c('default', 'article', 'book')
+)
+
 # an HTML form for creating new files in roam()
 feature_form = function(path) {
   nms = rownames(assets)
@@ -291,21 +307,38 @@ feature_form = function(path) {
   files = basename(files[file_exists(files)])
   one_string(c(
     '<h3>New File</h3>',
-    '<p><label>Filename: <input type="text" id="filename-input" list="file-list" placeholder="enter a new filename (not in the list)" /></label></p>',
+    '<p><label>Filename: <input type="text" id="filename-input" list="file-list" placeholder="e.g., notes.Rmd (.Rmd is added if no extension)" autocomplete="off" /></label></p>',
+    '<p id="filename-hint" aria-live="polite"></p>',
     if (length(files)) c(
       '<datalist id="file-list">',
-      sprintf('<option value="&#10060; %s">', html_escape(files, TRUE)),
+      sprintf('<option value="%s">', html_escape(files, TRUE)),
       '</datalist>'
     ),
-    '<p><b>Select HTML features</b></p>', '<p style="columns:20em;">',
+    '<div id="feature-section">',
+    '<p><b>Start from</b> <span class="presets">',
+    sprintf(
+      '<button type="button" data-features="%s" aria-pressed="false">%s</button>',
+      vapply(feature_presets, paste, '', collapse = ','), names(feature_presets)
+    ),
+    '</span></p>',
+    '<details><summary>HTML features (<span id="features-count">none</span>)</summary>',
+    '<p style="columns:20em;">',
     sprintf(
       '<label><input name="%s" type="checkbox" /> <a href="https://pkg.yihui.org/litedown/book/#sec:%s" target="_blank"><code>%s</code></a>: %s</label>',
       nms, nms, nms, html_escape(assets[, 'description'])
-    ), '</p>'
+    ), '</p></details>',
+    '<p><b>YAML preview</b></p><pre><code id="yaml-preview"></code></pre>',
+    '</div>'
   ))
 }
 
 na_omit = function(x) x[!is.na(x)]
+
+# JS needed by diagram languages
+diagram_js = list(
+  mermaid = '@npm/mermaid/dist/mermaid.min.js',
+  pele = c('@npm/pele/dist/pele.global.js', '@render-pele')
+)
 
 # accumulate variable values
 acc_var = local({
@@ -405,7 +438,7 @@ set_highlight = function(options, html) {
   autoloader = 'plugins/autoloader/prism-autoloader.min.js'
   o$js = c(o$js, if (!is.null(l <- o$languages)) get_lang(l) else {
     # detect <code> languages in html and load necessary language components
-    lang = unlist(match_full(html, r))
+    lang = match_full(html, r)
     lang = gsub(' .*', '', lang)  # only use the first class name
     lang = setdiff(lang, 'plain')  # exclude known non-existent names
     f = switch(p, highlight = js_libs[[c(p, 'js')]], prism = autoloader)
@@ -431,7 +464,7 @@ lang_files = function(package, path, langs) {
   warn = function(l1, l2, url) warning(
     "Unable to recognize code blocks with language(s): ", comma_list(l2),
     ". They will not be syntax highlighted by ", package, ".js. If you can find ",
-    "the right language files at ", url, ", you may mannually specify their names ",
+    "the right language files at ", url, ", you may manually specify their names ",
     "in the 'languages' field of the 'js_highlight' option.",
     if (length(l1)) c(" Also remember to add ", comma_list(l1))
   )
@@ -443,11 +476,8 @@ lang_files = function(package, path, langs) {
     x = grep(r, x, value = TRUE)
     l = gsub(r, '\\1', x)
     # then find their aliases
-    a = lapply(match_full(x, '(?<=aliases:\\[)[^]]+(?=\\])'), function(z) {
-      z = unlist(strsplit(z, '[",]'))
-      z[!is_blank(z)]
-    })
-    l = c(l, unlist(a))  # all possible languages that can be highlighted
+    a = unlist(strsplit(match_full(x, '(?<=aliases:\\[)[^]]+(?=\\])'), '[",]'))
+    l = c(l, a[!is_blank(a)])  # all possible languages that can be highlighted
     l = setdiff(langs, l)  # languages not supported by default
     if (length(l) == 0) return()
     # check if language files exist on CDN
@@ -460,7 +490,7 @@ lang_files = function(package, path, langs) {
     l1
   } else {
     # dependencies and aliases (the arrays should be more than 1000 characters)
-    x = unlist(match_full(x, '(?<=\\{)([[:alnum:]_-]+:\\[?"[^}]{1000,})(?=\\})'))
+    x = match_full(x, '(?<=\\{)([[:alnum:]_-]+:\\[?"[^}]{1000,})(?=\\})')
     if (length(x) < 2) {
       warning(
         "Unable to process Prism's autoloader plugin (", u, ") to figure out ",
@@ -469,9 +499,8 @@ lang_files = function(package, path, langs) {
       )
       return()
     }
-    x = x[1:2]
-    x = lapply(match_full(x, '([[:alnum:]_-]+):(\\["[^]]+\\]|"[^"]+")'), function(z) {
-      z = gsub('[]["]', '', z)
+    x = lapply(x[1:2], function(s) {
+      z = gsub('[]["]', '', match_full(s, '([[:alnum:]_-]+):(\\["[^]]+\\]|"[^"]+")'))
       uapply(strsplit(z, '[:,]'), function(y) {
         set_names(list(y[-1]), y[1])
       }, recursive = FALSE)
@@ -629,7 +658,7 @@ build_toc = function(html, n = 3) {
   if (n <= 0) return()
   if (n > 6) n = 6
   r = sprintf('<(h[1-%d])( id="[^"]+")?[^>]*>(.+?)</\\1>', n)
-  items = unlist(match_full(html, r))
+  items = match_full(html, r)
   # ignore headings with class="unlisted"
   items = items[!has_class(items, 'unlisted')]
   if (length(items) <= 1) return()  # require at least 2 items in TOC
@@ -638,14 +667,14 @@ build_toc = function(html, n = 3) {
   h = as.integer(gsub('^h', '', gsub(r, '\\1', items)))  # heading level
   s = strrep('  ', seq_len(n) - 1)  # indent
   x = paste0(s[h], '- ', x)  # create an unordered list
-  x = commonmark::markdown_html(x)
+  x = markdown_html(x)
   # add anchors on TOC items
   x = gsub('<toc id="([^"]+)">(.+?)</toc>', '<a href="#\\1">\\2</a>', x)
   x = gsub('</?toc>', '', x)
   # add class 'numbered' to the first <ul> if any heading is numbered
   if (length(grep('<span class="section-number[^"]*">', x)))
     x = sub('<ul>', '<ul class="numbered">', x)
-  paste0('<div id="TOC">\n', x, '</div>')
+  paste0('<nav id="TOC">\n', x, '</nav>')
 }
 
 # add TOC to the html body
@@ -673,45 +702,20 @@ redefine_level = function(x, top) {
 # LaTeX commands
 move_attrs = function(x, format = 'html') {
   if (format == 'html') {
-    # images
-    x = convert_attrs(x, '(<img src="[^>]+ )/>\\{([^}]+)\\}', '\\2', function(r, z, z2) {
-      z1 = sub(r, '\\1', z)
-      paste0(z1, z2, ' />')
-    })
     # headings
     x = convert_attrs(x, '(<h[1-6])(>.+?) \\{([^}]+)\\}(</h[1-6]>)', '\\3', function(r, z, z3) {
       z1 = sub(r, '\\1 ', z)
       z24 = sub(r, '\\2\\4', z)
       paste0(z1, z3, z24)
-    })
-    # links
-    x = convert_attrs(x, '(<a[^>]+)(>(?s).*?</a>)(\\{([^}]+)\\})?', '\\4', function(r, z, z3) {
-      z1 = sub(r, '\\1', z, perl = TRUE)
-      z2 = sub(r, '\\2', z, perl = TRUE)
-      paste0(z1, ifelse(z3 == '', '', ' '), z3, z2)
-    })
+    }, lines = TRUE)
     # fenced Div's
     x = convert_attrs(x, '<p>:::+ \\{(.*?)\\}</p>', '\\1', function(r, z, z1) {
       # add attributes to the div but remove the data-latex attribute
       z1 = str_trim(gsub('(^| )data-latex="[^"]*"( |$)', ' ', z1))
       sprintf('<div%s%s>', ifelse(z1 == '', '', ' '), z1)
-    })
+    }, lines = TRUE)
     x = gsub('<p>:::+</p>', '</div>', x)
   } else if (format == 'latex') {
-    # only support image width
-    x = convert_attrs(x, '(\\\\includegraphics)(\\{[^}]+\\})\\\\\\{([^}]+)\\\\\\}', '\\3', function(r, z, z3) {
-      r2 = '(^|.* )width="([^"]+)"( .*|$)'
-      j = grepl(r2, z3)
-      w = gsub(r2, '\\2', z3[j])
-      w = gsub('\\\\', '\\', w, fixed = TRUE)
-      k = grep('%$', w)
-      w[k] = paste0(as.numeric(sub('%$', '', w[k])) / 100, '\\linewidth')
-      z3[j] = paste0('[width=', w, ']')
-      z3[!j] = ''
-      z1 = sub(r, '\\1', z)
-      z2 = sub(r, '\\2', z)
-      paste0(z1, z3, z2)
-    }, format)
     # discard most attributes for headings
     r = sprintf('(\\\\(%s)\\{.+?) \\\\\\{([^}]+)\\\\\\}(\\})', paste(sec_levels, collapse = '|'))
     x = convert_attrs(x, r, '\\3', function(r, z, z3) {
@@ -749,7 +753,7 @@ move_attrs = function(x, format = 'html') {
       z3 = gsub('\\end{caption}', '}', z3, fixed = TRUE)
       z3
     }, format)
-    # remove table env generated from commonmark and use those from fenced Divs
+    # remove table env generated from cmark and use those from fenced Divs
     x = gsub('\\\\begin\\{table\\}\n(?=\\\\begin\\{tabular\\})', '', x, perl = TRUE)
     x = gsub('(?<=\\\\end\\{tabular\\}\n)\\\\end\\{table}', '', x, perl = TRUE)
   } else {
@@ -758,8 +762,9 @@ move_attrs = function(x, format = 'html') {
   x
 }
 
-convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
-  r2 = '(?<=^| )[.#]([-:[:alnum:]]+)(?= |$)'  # should we allow other chars in ID/class?
+# `lines = TRUE` processes `x` line by line (only valid when `r` cannot match
+# across a newline); see match_replace()
+convert_attrs = function(x, r, s, f, format = 'html', f2 = identity, lines = FALSE) {
   match_replace(x, r, function(y) {
     z = sub(r, s, y, perl = TRUE)
     if (format == 'html') {
@@ -770,27 +775,12 @@ convert_attrs = function(x, r, s, f, format = 'html', f2 = identity) {
       z = gsub('\\\\([#%])', '\\1', z)
     }
     z2 = f2(z)
-    # {-} is a shorthand of {.unnumbered}
-    z2[z2 == '-'] = '.unnumbered'
-    # convert #id to id="" and .class to class=""
-    z2 = match_replace(z2, r2, function(a) {
-      i = grep('^[.]', a)
-      if ((n <- length(i))) {
-        # merge multiple classes into one class attribute
-        a[i] = sub('^[.]', '', a[i])
-        a[i] = c(sprintf('class="%s"', paste(a[i], collapse = ' ')), rep('', n - 1))
-        a = c(a[i], a[-i])
-      }
-      if (length(i <- grep('^#', a))) {
-        a[i] = gsub(r2, 'id="\\1"', a[i], perl = TRUE)
-        a = c(a[i], a[-i])  # make sure id is the first attribute
-      }
-      a
-    })
-    # remove spaces after class="..." (caused by merging multiple classes)
-    z2 = sub('(^| )(class="[^"]+")  +', '\\1\\2 ', z2)
-    f(r, y, str_trim(z2))
-  })
+    # build the HTML attribute string in C (shared with the code block
+    # 'attributes' extension): .class -> class="", #id -> id="", {-} ->
+    # .unnumbered, key=value verbatim, in the order class, id, then the rest
+    z2 = .Call(R_convert_attrs, z2, '')
+    f(r, y, z2)
+  }, lines = lines)
 }
 
 str_trim = function(x) gsub('^\\s+|\\s+$', '', x)
@@ -807,24 +797,6 @@ latex_envir = function(x, env = NULL) {
   c(if (x1 == '') paste0('\\end', env2) else paste0('\\begin', x1), latex_envir(x[-1], env))
 }
 
-# fix footnotes for LaTeX output: convert `\footnotemark[1] \footnotetext[1]{*}`
-# to `\footnote{*}` (see r-lib/commonmark#32)
-fix_footnotes = function(x) {
-  f1 = f2 = NULL
-  r = '\n\\\\footnotetext\\[(.+?)]\\{(.+?)\n\n}\n'
-  x = match_replace(x, r, function(z) {
-    f1 <<- c(f1, sub(r, '\\1', z))
-    f2 <<- c(f2, sub(r, '\\2', z))
-    ''
-  }, perl = FALSE)
-  f1 = sprintf('\\footnotemark[%s]', f1)
-  f2 = sprintf('\\footnote{%s}', f2)
-  for (i in seq_along(f1)) {
-    x = sub(f1[i], f2[i], x, fixed = TRUE)
-  }
-  x
-}
-
 # add auto identifiers to headings
 auto_identifier = function(x) {
   r = '<(h[1-6])([^>]*)>(.+?)</\\1>'
@@ -837,7 +809,7 @@ auto_identifier = function(x) {
     id = unique_id(paste0(p[i], alnum_id(z3[i])), 'section')
     z[i] = sprintf('<%s id="%s"%s>%s</%s>', z1[i], id, z2[i], z3[i], z1[i])
     z
-  })
+  }, lines = TRUE)
 }
 
 # add a number suffix to an id if it is duplicated
@@ -858,7 +830,7 @@ has_class = function(x, class) {
 
 # number sections in HTML output
 number_sections = function(x) {
-  h = sub('</h([1-6])>', '\\1', unlist(match_full(x, '</h[1-6]>')))
+  h = sub('</h([1-6])>', '\\1', match_full(x, '</h[1-6]>'))
   if (length(h) == 0) return(x)  # no headings
   h = min(as.integer(h))  # highest level of headings
   r = '<h([1-6])([^>]*)>(?!<span class="section-number)'
@@ -919,7 +891,7 @@ number_sections = function(x) {
       ))
     }
     z
-  })
+  }, lines = TRUE)
 }
 
 # number elements such as headings and figures, etc and resolve cross-references
@@ -929,7 +901,7 @@ number_refs = function(x, r, katex = TRUE) {
 
   # first, find numbered section headings
   r2 = '<h[1-6][^>]*? id="([^"]+)"[^>]*><span class="section-number[^"]*">([A-Z0-9.]+)</span>'
-  m = match_all(x, r2)[[1]]
+  m = match_all(x, r2)
   if (length(m)) {
     ids = m[2, ]
     db = as.list(set_names(m[3, ], ids))
@@ -947,7 +919,7 @@ number_refs = function(x, r, katex = TRUE) {
     ids = split(id, type)
     db2 <<- unlist(unname(lapply(ids, function(id) set_names(seq_along(id), id))))
     sprintf('<span class="ref-number-%s">%d</span>', type, db2[id])
-  })
+  }, lines = TRUE)
   db = unlist(if (is.character(b)) merge_list(db, as.list(db2)) else c(db, db2))
   ids = names(db)
   if (any(i <- duplicated(ids))) warning('Duplicated IDs: ', one_string(ids[i], ', '))
@@ -980,7 +952,7 @@ number_refs = function(x, r, katex = TRUE) {
     )
     if (any(i4)) warning('Reference key(s) not found: ', one_string(id[i4], ', '))
     z
-  })
+  }, lines = TRUE)
 }
 
 # add a special anchor [](#@id) to text, to be used to resolved cross-references
@@ -1013,9 +985,9 @@ embed_resources = function(x, options) {
   if (!any(embed, is.character(offline))) return(x)
   clean = options[['embed_cleanup']]
 
-  # find images in <img> and (for slides only) comments
+  # find images in <img>/<embed> and (for slides only) comments
   rs = c(
-    '(<img src=")([^"]+)("[^>]*?/>)',
+    '(<(?:img|embed) src=")([^"]+)("[^>]*?/?>)',
     '(<!--#[^>]*? style="background-image: url\\("?)([^"]+?)("?\\);)'
   )
   for (r in rs) x = match_replace(x, r, function(z) {
@@ -1024,7 +996,7 @@ embed_resources = function(x, options) {
     z3 = sub(r, '\\3', z)
     # skip images already base64 encoded
     for (i in grep('^data:.+;base64,.+', z2, invert = TRUE)) {
-      is_svg = grepl('[.]svg$', f <- z2[i]) && grepl('^<img', z1[i])
+      is_svg = grepl('[.]svg([?#].*)?$', f <- z2[i]) && grepl('^<img', z1[i])
       a = if (is_svg) str_trim(gsub('^"|/>$', '', z3[i])) else ''
       f = download_url(f, offline)
       if (is_https(f)) {
@@ -1032,8 +1004,16 @@ embed_resources = function(x, options) {
           download_cache$get(f, 'text', function(xml) process_svg(xml, a))
         }
       } else if (embed[2]) {
-        if (file_exists(f <- URLdecode(f))) {
-          z2[i] = if (is_svg) process_svg(read_utf8(f), a) else base64_uri(f)
+        f = URLdecode(f)
+        # drop ?query/#hash if only the bare path exists; keep #hash (e.g.,
+        # #page=2 for PDF) on the data URI but not ?query (it'd corrupt base64)
+        hash = ''
+        if (!file_exists(f) && file_exists(f2 <- sub('[?#].*', '', f))) {
+          hash = sub('^[^#]*', '', f)
+          f = f2
+        }
+        if (file_exists(f)) {
+          z2[i] = if (is_svg) process_svg(read_utf8(f), a) else paste0(base64_uri(f), hash)
           if (clean && normalize_path(f) %in% .env$plot_files) file.remove(f)
         } else {
           warning("File '", f, "' not found (hence cannot be embedded).")
@@ -1123,7 +1103,9 @@ named_bool = function(x, val = TRUE) as.list(set_names(rep(val, length(x)), x))
 # normalize metadata variable names: change _ to -
 normalize_meta = function(x) {
   # make sure some variables are available in metadata
-  x = merge_list(list(classoption = '', documentclass = 'article', body_class = 'body'), x)
+  x = merge_list(list(
+    classoption = '', documentclass = 'article', body_class = '', body_tag = 'article'
+  ), x)
   names(x) = gsub('_', '-', names(x))
   x
 }
@@ -1146,6 +1128,13 @@ jsdelivr = function(file, dir = 'npm/@xiee/utils/') {
   ifelse(is_https(file), file, sprintf('https://cdn.jsdelivr.net/%s%s', dir, file))
 }
 
+# read the cache of jsdelivr versions, which is discarded if it was saved by a
+# different version of litedown (unless `any = TRUE`, e.g., as a fallback)
+read_jsd_cache = function(file, any = FALSE) {
+  info = if (file.exists(file)) readRDS(file)
+  if (any || identical(info$litedown, packageVersion('litedown'))) info
+}
+
 # get the latest version of jsdelivr assets
 jsd_version = local({
   vers = list()  # cache versions in current session
@@ -1159,6 +1148,7 @@ jsd_version = local({
   # update cache to a specific version
   u_cache = function(info, pkg, version, file) {
     if (!grepl('^@', version)) version = paste0('@', version)
+    info$litedown = packageVersion('litedown')
     info[[pkg]] = list(version = version, time = Sys.time())
     saveRDS(info, file)
     version
@@ -1166,12 +1156,13 @@ jsd_version = local({
   # cache expires after one week by default
   v_cache = function(pkg, force, delta = getOption('litedown.jsdelivr.cache', 604800)) {
     if (!isTRUE(force) && file.exists(f <- p_cache())) {
-      info = readRDS(f)
+      info = read_jsd_cache(f, is.infinite(delta))
       if (is.character(force)) {
         u_cache(info, pkg, force, f)
       } else {
         info = info[[pkg]]
-        if (!is.null(t <- info$time) && Sys.time() - t <= delta) info$version
+        age = as.numeric(Sys.time() - info$time, units = 'secs')
+        if (length(age) && age <= delta) info$version
       }
     }
   }
@@ -1184,8 +1175,7 @@ jsd_version = local({
     v = grep_sub('.*"version":\\s*"([0-9.]+)".*', '@\\1', x)
     if (length(v)) {
       if (dir_create(dirname(f <- p_cache()))) {
-        info = if (file.exists(f)) readRDS(f) else list()
-        u_cache(info, pkg, v[1], f)
+        u_cache(read_jsd_cache(f), pkg, v[1], f)
       }
       v[1]
     }
@@ -1425,6 +1415,14 @@ download_url = function(url, dir = '.', file = NULL, handler = NULL) {
     })
   }
   URLencode(p)
+}
+
+# use <embed> instead of <img> for PDF files (browsers can't render them in <img>)
+pdf_embed = function(x) {
+  gsub(
+    '<img src="([^"]+?[.](?i:pdf)(?:[?#][^"]*)?)" alt="([^"]*)"',
+    '<embed src="\\1" type="application/pdf" aria-label="\\2"', x, perl = TRUE
+  )
 }
 
 # compact HTML code

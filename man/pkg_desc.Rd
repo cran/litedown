@@ -4,8 +4,10 @@
 \alias{pkg_desc}
 \alias{pkg_news}
 \alias{pkg_code}
+\alias{pkg_examples}
 \alias{pkg_citation}
 \alias{pkg_manual}
+\alias{pkg_articles}
 \title{Print the package description, news, citation, manual pages, and source code}
 \usage{
 pkg_desc(name = detect_pkg(), type = c("table", "dl"))
@@ -27,6 +29,12 @@ pkg_code(
   link = TRUE
 )
 
+pkg_examples(
+  path = attr(detect_pkg(), "path"),
+  dir = "examples",
+  groups = site_groups("examples")
+)
+
 pkg_citation(name = detect_pkg())
 
 pkg_manual(
@@ -34,8 +42,11 @@ pkg_manual(
   toc = TRUE,
   number_sections = TRUE,
   overview = TRUE,
-  examples = list()
+  examples = list(),
+  groups = site_groups("manual")
 )
+
+pkg_articles(name = detect_pkg(), groups = site_groups("articles"))
 }
 \arguments{
 \item{name}{The package name (by default, it is automatically detected from
@@ -43,7 +54,12 @@ the \code{DESCRIPTION} file if it exists in the current working directory or
 upper-level directories).}
 
 \item{type}{The HTML tag for the description: \code{table} (\verb{<table>} with \verb{<tr>}
-and \verb{<td>}) or \code{dl} (definition list \verb{<dl>} with \verb{<dt>} and \verb{<dd>}).}
+and \verb{<td>}) or \code{dl} (definition list \verb{<dl>} with \verb{<dt>} and \verb{<dd>}). The
+\code{dl} type generates a compact description for a sidebar (a fenced Div with
+the classes \code{side} and \code{side-right}): the fields \code{Description} and
+\code{Suggests} are omitted, and the fields \code{URL} and \code{BugReports} are merged
+into a field \code{Links}, in which URLs are shown as short text links (instead
+of long bare URLs that cannot be wrapped in a narrow sidebar).}
 
 \item{path}{For \code{\link[=pkg_news]{pkg_news()}}, path to the \code{NEWS.md} file. If empty, \code{\link[=news]{news()}}
 will be called to retrieve the news entries. For \code{\link[=pkg_code]{pkg_code()}}, path to the
@@ -71,6 +87,34 @@ can also provide a string template containing the placeholder \verb{\%s} (which
 will be filled out with the file paths via \code{sprintf()}), e.g.,
 \verb{https://github.com/yihui/litedown/blob/main/\%s}.}
 
+\item{dir}{The directory of examples, relative to the package root \code{path}.}
+
+\item{groups}{A list of groups, each of which is a list with the fields
+\code{title}, \code{desc} (optional), and \code{contents}, where \code{contents} is a character
+vector of names to be matched (\code{*} and \verb{?} are wildcards): topic names or
+Rd filenames for \code{pkg_manual()}, vignette filenames or titles for
+\code{pkg_articles()}, and filenames or titles of the example files for
+\code{pkg_examples()}. Items that do not belong to any group are put in a group
+named \code{Other}, except help pages with the keyword \code{internal}, which are
+listed only if a group names them (e.g., re-exported functions). A name
+that matches nothing is an error. By default, groups are read from the
+subfield \code{manual}, \code{articles}, or \code{examples} of the field \code{site} in
+\verb{_litedown.yml} in the current directory, e.g.,
+
+\if{html}{\out{<div class="sourceCode yaml">}}\preformatted{site:
+  manual:
+    Sites:
+      desc: Build package sites
+      contents: [pkg_site, "roam*"]
+    Others: [mark, fuse]
+}\if{html}{\out{</div>}}
+
+That is, the keys are group titles, and each value is either the
+\code{contents} or a map with \code{desc} and \code{contents}.
+
+If no groups are provided, \code{pkg_manual()} lists topics alphabetically, and
+\code{pkg_articles()} and \code{pkg_examples()} list all items in a single list.}
+
 \item{overview}{Whether to include the package overview page, i.e., the
 \code{{name}-package.Rd} page.}
 
@@ -88,18 +132,25 @@ inside a code chunk of an R Markdown document.
 \code{pkg_code()} returns the package source code under the \verb{R/} and
 \verb{src/} directories.
 
+\code{pkg_examples()} returns a list of boxes for the example files (e.g.,
+\code{.Rmd} files) under the \verb{examples/} directory of the package, each with a
+link to its output, a link to its source, and a preview of the source.
+
 \code{pkg_citation()} returns the package citation in both the plain-text
 and BibTeX formats.
 
 \code{pkg_manual()} returns all manual pages of the package in HTML.
+
+\code{pkg_articles()} returns a list of links to the built vignettes of
+the package (and their source files) in Markdown. It also copies the
+\code{doc} directory of the installed package to the current directory.
 }
 \description{
 Helper functions to retrieve various types of package information that can be
 put together as the full package documentation like a \pkg{pkgdown} website.
 These functions can be called inside any R Markdown document.
 }
-\examples{
-\dontrun{
+\examples{\dontrun{
 litedown::pkg_desc()
 litedown::pkg_news()
 litedown::pkg_citation()

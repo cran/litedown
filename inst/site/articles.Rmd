@@ -1,0 +1,5 @@
+---
+title: Package vignettes
+---
+
+`{r} litedown::pkg_articles()`

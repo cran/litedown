@@ -28,15 +28,15 @@
 #' - `newfile`: Build an input file if it does not have a `.html` output file.
 #'
 #' - `outdated`: Rebuild an input file if the modification time of its `.html`
-#' output file is older than the input.
+#' output file is older than the input or the config file `_litedown.yml`.
 #' @param input The root directory of the site, or a vector of input file paths.
 #' @return Output file paths (invisibly).
 #' @examples
 #' # create a minimal book example in the temp dir
 #' d = tempfile()
-#' litedown:::proj_skeleton(d, 'site')
+#' litedown:::proj_skeleton(d, "site")
 #' fuse_site(d)
-#' if (interactive()) browseURL(file.path(d, 'index.html'))
+#' if (interactive()) browseURL(file.path(d, "index.html"))
 #' # clean up
 #' if (xfun::is_R_CMD_check()) unlink(d, recursive = TRUE)
 #' @export
@@ -55,13 +55,15 @@ fuse_site = function(input = '.') {
   cfg = merge_list(list(rebuild = 'outdated'), info$yaml[['site']])
   b = cfg[['rebuild']]
   if (b == 'outdated') b = 0
-  i = if (is.numeric(b)) filter_outdated(inputs, output, b) else {
+  # a config change affects all pages
+  deps = if (!is.na(root)) file.path(root, '_litedown.yml')
+  i = if (is.numeric(b)) filter_outdated(inputs, output, b, deps) else {
     if (b == 'newfile') !file_exists(output) else TRUE
   }
   opts = yaml_field(info$yaml, 'html', c('meta', 'options'))
   opts[['meta']] = merge_list(list(
-    css2 = c(site_css, '@site'), js2 = site_js,
-    include_before = nav_menu(info, inputs), include_after = format(Sys.Date(), '&copy; %Y')
+    css2 = c(site_css, '@site'), js2 = c(site_js, '@nav-highlight'),
+    include_before = nav_menu(info), include_after = format(Sys.Date(), '&copy; %Y')
   ), opts[['meta']])
   opts[['options']] = merge_list(
     list(embed_resources = FALSE, toc = TRUE), opts[['options']]
@@ -104,40 +106,74 @@ fuse_site = function(input = '.') {
 
 # common css/js for sites/books
 site_css = c('@default', '@article', '@copy-button', '@heading-anchor', '@pages')
-site_js = c('@sidenotes', '@appendix', '@toc-highlight', '@copy-button', '@heading-anchor', '@pages')
+site_js = c('@sidenotes', '@toc-highlight', '@copy-button', '@heading-anchor', '@pages')
 
 # set global options litedown.html.[meta|options] read from _litedown.yml
 set_site_options = function(opts, input, root, extra = NULL) {
   m = opts[['meta']]
+  edit = edit_page_url(input, root) %||% ''
   for (i in c('include_before', 'include_after')) {
     if (!is.character(m[[i]])) next
-    tag = if (i == 'include_before') 'nav' else 'footer'
+    nav = i == 'include_before'
+    tag = if (nav) 'nav' else 'footer'
     x = mark(I(one_string(m[[i]], test = c(dirname(input), root))))
-    x = sprintf('<%s>%s</%s>', tag, x, tag)
-    m[[i]] = sub_vars(x, list(input = I(input)))
+    # the class lets CSS tell the site menu from other <nav>s such as the TOC
+    x = sprintf('<%s%s>%s</%s>', tag, if (nav) ' class="site-nav"' else '', x, tag)
+    m[[i]] = sub_vars(x, list(input = I(input), edit = I(edit)))
+    # drop the link if the page has no source file on GitHub
+    if (!nav && edit == '') m[[i]] = gsub(
+      '<p><a [^>]*class="edit-page"[^>]*>.*?</a></p>\n?', '', m[[i]]
+    )
   }
   opts[['meta']] = m
   options(c(set_names(opts, paste0('litedown.html.', names(opts))), extra))
 }
 
-filter_outdated = function(x, x2, n) {
-  m1 = file.mtime(x); m2 = file.mtime(x2); is.na(m2) | m1 - m2 > n
+# GitHub URL for editing a page, if the page source also exists (at the same
+# relative path) in the package of the site, e.g., an example under `examples/`
+edit_page_url = function(input, root) {
+  if (is.na(root) || is.null(pkg <- in_dir(root, detect_pkg(error = FALSE))))
+    return()
+  # normalize both paths so that symlinked/short temp dirs compare equal
+  f = relative_path(normalize_path(input), normalize_path(root))
+  github_file_url(attr(pkg, 'path'), f, TRUE)
+}
+
+# `deps` are extra files that make all outputs outdated when they are modified
+filter_outdated = function(x, x2, n, deps = NULL) {
+  m1 = file.mtime(x); m2 = file.mtime(x2)
+  if (length(deps)) m1 = pmax(m1, max(file.mtime(deps)), na.rm = TRUE)
+  is.na(m2) | m1 - m2 > n
 }
 
 # build a nav menu from filenames under root directory
-nav_menu = function(info, inputs) {
+nav_menu = function(info) {
   if (is.na(info$root)) return('[Home](/index.html)')
   root = sub('/+$', '', info$root)  # strip any trailing slash for reliable dirname() comparison
-  b = basename(inputs[dirname(inputs) == root])
+  # list all pages, since `inputs` may be a single file when previewing
+  b = basename(find_input(root, FALSE, info$yaml[['site']][['pattern']]))
   links = sprintf(
     '[%s](/%s)', menu_name(sans_ext(ifelse(is_index(b), 'home', b))),
     if (is_roaming()) paste0(b, '?preview=2') else with_ext(b, '.html')
   )
-  # add subdirs that already have an index.html (same exclusion as find_input)
+  # add subdirs that already have an index.html (same exclusion as find_input),
+  # except `doc/` whose index.html is the vignette index of an R package
   sub_dirs = list.dirs(root, recursive = FALSE)
   sub_dirs = sub_dirs[file.exists(file.path(sub_dirs, 'index.html'))]
+  sub_dirs = sub_dirs[basename(sub_dirs) != 'doc']
   dnames = basename(sub_dirs)
-  c(links, sprintf('[%s](/%s/)', menu_name(dnames), dnames))
+  c(links, sprintf('[%s](/%s/)', menu_name(dnames), dnames), nav_github(root))
+}
+
+# a GitHub icon pushed to the right end of the menu (see site.css), if the
+# package that the site `root` belongs to has a GitHub repo
+nav_github = function(root = '.') {
+  if (is.null(pkg <- in_dir(root, detect_pkg(error = FALSE)))) return()
+  if (!length(repo <- github_link(attr(pkg, 'path')))) return()
+  sprintf(paste0(
+    '[![GitHub](https://cdn.jsdelivr.net/npm/@primer/octicons@19/build/svg/',
+    'mark-github-24.svg){.no-invert}](%s){.right}'
+  ), repo)
 }
 
 menu_name = function(x) {
@@ -200,9 +236,9 @@ menu_name = function(x) {
 #' @examples
 #' # create a minimal book example in the temp dir
 #' d = tempfile()
-#' litedown:::proj_skeleton(d, 'book')
+#' litedown:::proj_skeleton(d, "book")
 #' fuse_book(d)
-#' if (interactive()) browseURL(file.path(d, 'index.html'))
+#' if (interactive()) browseURL(file.path(d, "index.html"))
 #' # clean up
 #' if (xfun::is_R_CMD_check()) unlink(d, recursive = TRUE)
 #' @export
@@ -282,12 +318,12 @@ fuse_book = function(input = '.', output = NULL, envir = parent.frame()) {
       }
     }
     c(
-      h, sprintf('::: {.chapter .body data-source="%s"}', x),
-      info('before'), '', out, '', info('after'), ':::'
+      h, sprintf('<article class="chapter" data-source="%s">', x), '',
+      info('before'), '', out, '', info('after'), '', '</article>'
     )
   })
   tweak_options(format, yaml, list(
-    body_class = '', css2 = c(site_css, '@book'), js2 = site_js
+    body_tag = 'div', css2 = c(site_css, '@book'), js2 = site_js
   ), toc = length(preview) == 0)
   fuse_output(input[1], output, unlist(res), full)
 }

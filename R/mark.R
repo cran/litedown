@@ -1,7 +1,7 @@
 #' Render Markdown, R Markdown, and R scripts
 #'
-#' The function `mark()` renders Markdown to an output format via the
-#' \pkg{commonmark} package.
+#' The function `mark()` renders Markdown to an output format via the bundled
+#' 'cmark-gfm' library.
 #' @param input A character vector to provide the input file path or text. If
 #'   not provided, the `text` argument must be provided instead. The `input`
 #'   vector will be treated as a file path if it is a single string, and points
@@ -48,19 +48,19 @@
 #' @export
 #' @examples
 #'
-#' mark(c('Hello _World_!', '', 'Welcome to **litedown**.'))
+#' mark(c("Hello _World_!", "", "Welcome to **litedown**."))
 #' # if input appears to be a file path but should be treated as text, use I()
-#' mark(I('This is *not* a file.md'))
+#' mark(I("This is *not* a file.md"))
 #' # that's equivalent to
-#' mark(text = 'This is *not* a file.md')
+#' mark(text = "This is *not* a file.md")
 #'
 #' # output to a file
-#' (mark('_Hello_, **World**!', output = tempfile()))
+#' (mark("_Hello_, **World**!", output = tempfile()))
 #'
 #' # convert to other formats
-#' mark('Hello _World_!', '.tex')
-#' mark('Hello _**`World`**_!', 'xml')
-#' mark('Hello _**`World`**_!', 'text')
+#' mark("Hello _World_!", ".tex")
+#' mark("Hello _**`World`**_!", "xml")
+#' mark("Hello _**`World`**_!", "text")
 mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()) {
   text = read_input(input, text); input = attr(text, 'input')
   part = yaml_body(text)
@@ -83,17 +83,25 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   meta = normalize_meta(meta)
 
   render_fun = tryCatch(
-    getFromNamespace(paste0('markdown_', tolower(format)), 'commonmark'),
+    get(paste0('markdown_', tolower(format)), envir = asNamespace('litedown')),
     error = function(e) {
-      stop("Output format '", format, "' is not supported in commonmark.")
+      stop("Output format '", format, "' is not supported.")
     }
   )
 
   options = merge_list(yaml_field(yaml, format, 'options'), option2list(options))
   options = normalize_options(options, format)
   options$extensions = intersect(
-    names(Filter(isTRUE, options)), commonmark::list_extensions()
+    names(Filter(isTRUE, options)), list_extensions()
   )
+  options$extensions = union(options$extensions, if (format %in% c('html', 'latex')) c(
+    # the 'latex_math' option enables the C 'math' extension ($...$, $$...$$,
+    # and \begin{}...\end{} environments)
+    if (isTRUE(options[['latex_math']])) 'math',
+    # rawblock/inlineattrs/attributes are always enabled by the markdown_*()
+    # wrappers themselves (see always_on()); only latexfootnotes is conditional
+    if (format == 'latex' && isTRUE(options[['footnotes']])) 'latexfootnotes'
+  ))
 
   # build PDF for LaTeX output when the output file is .pdf or latex_engine is specified
   is_pdf = is_output_file(output) && format == 'latex' &&
@@ -131,69 +139,10 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       length(grep(pattern, text, perl = TRUE))
   }
 
-  # protect $ $ and $$ $$ math expressions for html/latex output
-  if (has_math <- test_feature('latex_math', '[$]')) {
-    id = id_string(text); maths = NULL
-    text = xfun::protect_math(text, id)
-    if (has_math <- any(grepl(paste0('`', id), text, fixed = TRUE))) {
-      # temporarily replace math expressions with tokens so render() won't seem
-      # them (to avoid issues like #33) and restore them later
-      text = one_string(text)
-      text = match_replace(text, sprintf('`%s(?s).{3,}?%s`', id, id), function(x) {
-        # replace math with !id-n-id! where n is the index of the math
-        tokens = sprintf('!%s-%d-%s!', id, length(maths) + seq_along(x), id)
-        math = gsub(sprintf('`%s|%s`', id, id), '', x)
-        maths <<- c(maths, set_names(math, tokens))
-        tokens
-      })
-      if (format == 'html') maths = html_escape(maths)
-      text = split_lines(text)
-    }
-  }
+  # Whether any LaTeX math is present, to decide whether to load KaTeX/MathJax.
+  has_math = FALSE
 
-  p = NULL  # indices of prose
-  find_prose = local({
-    t = NULL
-    function() {
-      # return early if text has not changed
-      if (!is.null(p) && identical(text, t)) return(p)
-      t <<- text
-      p <<- prose_index(text)
-    }
-  })
-  # ensure a blank line after an HTML tag if followed by a code block,
-  # otherwise the code block may be considered part of HTML, e.g.,
-  # for <p></p>\n```\n```, the code block after </p> won't be recognized
-  find_prose()
-  if (length(i <- grep('</[a-z0-9]+>\\s*$', text[p]))) {
-    # if the next line is not prose but code block, append \n
-    k = p[i][!(p[i] + 1) %in% p]
-    if (length(k)) text[k] = paste0(text[k], '\n')
-  }
-
-  # superscript and subscript; for now, we allow only characters alnum|*|(|) for
-  # script text but can consider changing this rule upon users' request
-  r2 = '(?<!`)\\^([[:alnum:]*(),.]+?)\\^(?!`)'
-  if (has_sup <- test_feature('superscript', r2)) {
-    id2 = id_string(text)
-    find_prose()
-    text[p] = match_replace(text[p], r2, function(x) {
-      # place superscripts inside !id...id!
-      x = gsub('^\\^|\\^$', id2, x)
-      sprintf('!%s!', x)
-    })
-  }
-  r3 = '(?<![~`[:space:]])~([[:alnum:]*(),.]+?)~(?!`)'
-  if (has_sub <- test_feature('subscript', r3)) {
-    id3 = id_string(text)
-    find_prose()
-    text[p]= match_replace(text[p], r3, function(x) {
-      # place subscripts inside !id...id!
-      x = gsub('^~|~$', id3, x)
-      sprintf('!%s!', x)
-    })
-  }
-  find_prose()
+  p = prose_index(text)  # indices of prose
   # add line breaks before/after fenced Div's to wrap ::: tokens into separate
   # paragraphs or code blocks
   text[p] = sub('^([ >]*:::+ )([^ {]+)$', '\\1{.\\2}', text[p]) # ::: foo -> ::: {.foo}
@@ -202,23 +151,6 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     if (format == 'latex') '\\1\n\\1```\n\\1\\2 \\3\n\\1```\n\\1' else '\\1\n\\1\\2\n\\1',
     text[p]
   )
-
-  id4 = id_string(text)
-  if (format == 'latex') {
-    # put info string inside code blocks so the info won't be lost, e.g., ```r -> ```\nr
-    text = gsub(
-      '^([> ]*)(```+)([^`].*)$', sprintf('\\1\\2\n\\1%s\\3%s', id4, id4), text
-    )
-  } else if (format == 'html' && length(p) < length(text)) {
-    # hide spaces so that attributes won't be dropped: {.lang foo} -> {.lang!id!foo}
-    r4 = '^([> ]*```+\\s*)(\\{.+})\\s*$'
-    text = match_replace(text, r4, function(x) {
-      x1 = sub(r4, '\\1', x)
-      x2 = sub(r4, '\\2', x)
-      x2 = gsub(' ', id4, x2, fixed = TRUE)
-      paste0(x1, x2)
-    })
-  }
 
   # turn @ref into [@ref](#ref) and resolve cross-references later in JS; for
   # latex output, turn @ref to \ref{}
@@ -233,62 +165,17 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   ret = render(text)
   ret = move_attrs(ret, format)  # apply attributes of the form {attr="value"}
 
-  if (has_math) ret = match_replace(ret, sprintf('!%s-\\d+-%s!', id, id), function(x) {
-    if (length(maths) != length(x)) warning(
-      'LaTeX math expressions cannot be restored correctly (expected ',
-      length(maths), ' expression(s) but found ', length(x), ' in the output).'
-    )
-    maths[x]
-  })
-
-  has_mermaid = FALSE
+  diagrams = character()  # diagram languages used (mermaid/pele)
 
   if (format == 'html') {
-    # don't disable check boxes
-    ret = gsub('(<li><input type="checkbox" [^>]*?)disabled="" (/>)', '\\1\\2', ret)
-    # replace <a> with <span> if href is empty but other attrs exist, so we have
-    # a way to create SPANs with attributes, e.g., [text](){.foo} -> <span
-    # class="foo"></span>
-    ret = gsub('<a href="" ([^>]+>.*?</)a>', '<span \\1span>', ret)
-    if (has_sup)
-      ret = gsub(sprintf('!%s(.+?)%s!', id2, id2), '<sup>\\1</sup>', ret)
-    if (has_sub)
-      ret = gsub(sprintf('!%s(.+?)%s!', id3, id3), '<sub>\\1</sub>', ret)
-    r4 = '<pre><code class="language-\\{=([^}]+)}">(.+?)</code></pre>\n'
-    ret = match_replace(ret, r4, function(x) {
-      lang = gsub(r4, '\\1', x)
-      code = gsub(r4, '\\2', x)
-      # restore raw html content from ```{=html}
-      i1 = lang == 'html'
-      x[i1] = restore_html(code[i1])
-      # possible math environments
-      i2 = (lang %in% c('tex', 'latex')) &
-        grepl('^\\\\begin\\{[a-zA-Z*]+\\}.+\\\\end\\{[a-zA-Z*]+\\}\n$', code)
-      if (any(i2)) {
-        x[i2] = sprintf('<p>\n%s</p>\n', code[i2])
-        has_math <<- TRUE
-      }
-      # discard other types of raw content blocks
-      x[!(i1 | i2)] = ''
-      x
-    }, perl = FALSE)  # for perl = TRUE, we'd need (?s) before (.+?)
-    # support mermaid
-    r_mmd = '<pre><code class="language-mermaid">(.*?)</code></pre>'
-    if (has_mermaid <- length(grep(r_mmd, ret))) {
-      ret = gsub(r_mmd, '<pre class="mermaid">\\1</pre>', ret)
-    }
-    r4 = '(<pre><code class="language-)\\{([^"]+)}">'
-    # deal with ```{.class1 .class2 attrs}, which is not supported by commonmark
-    ret = convert_attrs(ret, r4, '\\2', function(r, z, z2) {
-      z1 = sub(r, '\\1', z)
-      # make sure `class` is the first attribute
-      z2 = gsub('^(.+?)( +)(class="[^"]+")(.*)$', '\\3 \\1\\4', z2)
-      i = grepl('^class="', z2)
-      z2 = ifelse(i, sub('^class="', '', z2), paste0('"', z2))
-      paste0(z1, z2, '>')
-    }, 'html', function(z2) gsub(id4, ' ', restore_html(z2)))
-    # some code blocks with "attributes" are verbatim ones
-    ret = match_replace(ret, '```+\\s*\\{.+}', function(x) gsub(id4, ' ', x, fixed = TRUE))
+    # support mermaid/pele diagrams
+    ret = gsub(
+      '<pre><code class="language-(mermaid|pele)">(.*?)</code></pre>',
+      '<pre class="\\1">\\2</pre>', ret
+    )
+    diagrams = names(diagram_js)[vapply(names(diagram_js), function(i) {
+      any(grepl(sprintf('<pre class="%s">', i), ret, fixed = TRUE))
+    }, NA)]
     # remove empty table header
     ret = gsub('<thead>\n<tr>\n(<th[^>]*></th>\n)+</tr>\n</thead>\n', '', ret)
     # table caption: a paragraph that starts with 'Table: ' or ': ' after </table>
@@ -302,10 +189,30 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     if (isTRUE(options[['number_sections']])) ret = number_sections(ret)
     # build table of contents
     ret = add_toc(ret, options)
-    # math
-    if (!has_math) has_math = length(ret) && (
-      grepl('$$</p>', ret, fixed = TRUE) || grepl('\\)</span>', ret, fixed = TRUE)
-    )  # math may be from pkg_manual()'s HTML
+    # a raw LaTeX/TeX math environment (```{=latex} \begin{...} ... ```) is
+    # rendered as math in HTML by the C 'rawblock' extension regardless of the
+    # 'latex_math' option, so it must load a math library even when math is off.
+    # It emits the distinctive `<p>\n\begin{...}` signature (a newline right
+    # after <p>), which the 'math' extension's environment output (`<p>\begin{`)
+    # does not have, so this check is safe to run ungated.
+    if (!has_math) has_math = isTRUE(any(grepl('<p>\n\\\\begin\\{', ret)))
+    # math: detect the delimiters actually emitted into the output (inline
+    # \(...\), display $$...$$, and \begin{} environments) instead of scanning
+    # the source, which avoids loading a math library for a bare `$`, inline
+    # code (`$x$`), or currency. This is gated on the 'math' extension being
+    # enabled: when math is disabled (-latex_math), $$ / \begin{ in the output
+    # is literal text, not math, and looks identical to real math. pkg_manual()
+    # emits the same delimiters (\(...\), <p>$$...$$</p>) and runs with math
+    # enabled by default, so it is covered too. Code blocks/spans are stripped
+    # first because a math library ignores <code>/<pre> (a literal \( or $$
+    # inside code is not rendered as math, so it must not trigger loading it).
+    if (!has_math && 'math' %in% options$extensions) {
+      r0 = gsub('(?s)<(pre|code)[ >].*?</\\1>', '', ret, perl = TRUE)
+      has_math = length(r0) && (
+        grepl('\\(', r0, fixed = TRUE) || grepl('$$', r0, fixed = TRUE) ||
+        grepl('\\begin{', r0, fixed = TRUE)
+      )
+    }
     is_katex = TRUE
     if (has_math && length(js_math <- js_options(options[['js_math']], 'katex'))) {
       is_katex = js_math$package == 'katex'
@@ -313,27 +220,6 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
     # number figures and tables, etc.
     ret = number_refs(ret, r_ref, is_katex)
   } else if (format == 'latex') {
-    if (isTRUE(options[['footnotes']])) ret = fix_footnotes(ret)  # fix footnotes
-    if (has_sup)
-      ret = gsub(sprintf('!%s(.+?)%s!', id2, id2), '\\\\textsuperscript{\\1}', ret)
-    if (has_sub)
-      ret = gsub(sprintf('!%s(.+?)%s!', id3, id3), '\\\\textsubscript{\\1}', ret)
-    r4 = sprintf(
-      '(\\\\begin\\{verbatim}\n)%s(.+?)%s\n(.*?\n)(\\\\end\\{verbatim}\n)', id4, id4
-    )
-    ret = match_replace(ret, r4, function(x) {
-      info = gsub(r4, '\\2', x)
-      info = gsub('^\\{|}$', '', info)
-      i = info %in% c('=latex', '=tex')
-      x[i] = gsub(r4, '\\3', x[i])  # restore raw ```{=latex} content
-      i = !i & grepl('^=', info)
-      x[i] = ''  # discard other raw content
-      # TODO: support code highlighting for latex (listings or highr::hi_latex)
-      x = gsub(r4, '\\1\\3\\4', x)
-      x
-    }, perl = FALSE)
-    # for nested verbatim code blocks, the inner blocks may have leftover ```\nid4
-    ret = gsub(sprintf('(```)\n%s(.*?)%s', id4, id4), '\\1\\2', ret)
     # fix horizontal rules from --- (\linethickness doesn't work)
     ret = gsub('{\\linethickness}', '{1pt}', ret, fixed = TRUE)
     ret = redefine_level(ret, options[['top_level']])
@@ -389,9 +275,13 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       if (has_math) set_math(js_math, is_katex)
       # add js/css for syntax highlighting
       set_highlight(options, ret)
-      # add js for mermaid
-      if (has_mermaid && length(grep('mermaid', meta[['js']])) == 0)
-        acc_var(js = '@npm/mermaid/dist/mermaid.min.js')
+      # add js for diagrams (the library comes first, which can be skipped if
+      # the user has added it, e.g., with a specific version)
+      for (i in diagrams) {
+        js = diagram_js[[i]]
+        if (any(grepl(sprintf('npm/%s[@/]', i), meta[['js']]))) js = js[-1]
+        acc_var(js = js)
+      }
     }
     ret = build_output(
       format, options, template, meta, test = c(if (length(input)) dirname(input), '.')
@@ -402,7 +292,7 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
   }
 
   if (format == 'html') {
-    ret = in_dir(out_dir, embed_resources(ret, options))
+    ret = in_dir(out_dir, embed_resources(pdf_embed(ret), options))
     ret = clean_html(ret)
   } else if (format == 'latex') {
     # remove \maketitle if \title is absent
@@ -419,10 +309,13 @@ mark = function(input, output = NULL, text = NULL, options = NULL, meta = list()
       if (!isTRUE(yaml_field(yaml, format, 'keep_tex')))
         on.exit(file.remove(tex), add = TRUE)
       write_utf8(ret, tex)
-      output = tinytex::latexmk(
-        tex, latex_engine %||% 'xelatex',
+      # run latexmk in the output dir so that relative paths in the .tex file
+      # (e.g., plot files under output__files/) can be resolved (#168)
+      pdf = in_dir(out_dir, tinytex::latexmk(
+        basename(tex), latex_engine %||% 'xelatex',
         if (pkg_cite == 'biblatex') 'biber' else 'bibtex'
-      )
+      ))
+      output = if (out_dir == '.') pdf else file.path(out_dir, pdf)
     }
     # for RStudio to capture the output path when previewing the output
     if (is_rmd_preview()) message('\nOutput created: ', output)
@@ -437,7 +330,7 @@ build_output = function(format, options, template, meta, ...) {
     defaults = list(
       'css' = 'default',
       'lang' = locale_lang(),
-      'plain-title' = I(str_trim(commonmark::markdown_text(meta[['title']])))
+      'plain-title' = I(str_trim(markdown_text(meta[['title']])))
     )
     for (i in setdiff(names(defaults), names(meta))) meta[[i]] = defaults[[i]]
     # special handling for css/js "files" that have no extensions
@@ -452,7 +345,7 @@ build_output = function(format, options, template, meta, ...) {
 # substitute all variables in template with their values
 sub_vars = function(tpl, meta, ...) {
   # find all variables in the template
-  vars = unlist(match_full(tpl, '[$][-_[:alnum:]]+[$]'))
+  vars = match_full(tpl, '[$][-_[:alnum:]]+[$]')
   # insert $body$ at last in case the body contain any $variables$ accidentally
   if (!is.na(i <- match('$body$', vars))) vars = c(vars[-i], vars[i])
   for (v in vars) {
@@ -486,8 +379,14 @@ markdown_options = function() {
   # options enabled by default
   x1 = c(
     'smart', 'embed_resources', 'embed_cleanup', 'js_math', 'js_highlight', 'footnotes',
-    'superscript', 'subscript', 'latex_math', 'auto_identifiers', 'cross_refs',
-    setdiff(commonmark::list_extensions(), 'tagfilter')
+    'latex_math', 'auto_identifiers', 'cross_refs',
+    # superscript/subscript/strikethrough are C extensions, so they appear in
+    # list_extensions() and are user-facing option names. Exclude extensions that
+    # are not user-toggleable: 'math' (driven by the 'latex_math' option),
+    # 'latexfootnotes' (driven by 'footnotes' for latex), and the always_on()
+    # ones (rawblock/inlineattrs/attributes, unconditionally enabled by the
+    # markdown_*() wrappers)
+    setdiff(list_extensions(), c('tagfilter', 'math', 'latexfootnotes', always_on('html')))
   )
   # options disabled by default
   x2 = c(

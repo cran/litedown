@@ -33,24 +33,30 @@ new_env = function(...) new.env(..., parent = emptyenv())
 #' @examples
 #' library(litedown)
 #' # parse R Markdown
-#' res = crack(c('```{r}\n1+1\n```', 'Hello, `pi` = `{r} pi` and `e` = `{r} exp(1)`!'))
+#' res = crack(c(
+#'   "```{r}\n1+1\n```", "Hello, `pi` = `{r} pi` and `e` = `{r} exp(1)`!"
+#' ))
 #' str(res)
 #' # evaluate inline code and combine results with text fragments
 #' txt = lapply(res[[2]]$source, function(x) {
 #'   if (is.character(x)) x else eval(parse(text = x$source))
 #' })
-#' paste(unlist(txt), collapse = '')
+#' paste(unlist(txt), collapse = "")
 crack = function(input, text = NULL) {
   text = read_input(input, text); input = attr(text, 'input')
-  xml = commonmark::markdown_xml(text, sourcepos = TRUE)
   rx_engine = '([a-zA-Z0-9_]+)'  # only allow these characters for engine names
-  r = paste0(
-    '<(code|code_block) sourcepos="(\\d+):(\\d+)-(\\d+):(\\d+)"( info="[{]+',
-    rx_engine, '[^"]*?[}]")? xml:space="[^>]*>([^<]*)<'
-  )
-  m = match_all(xml, r, perl = TRUE)[[1]] %|% matrix(character(), 9)
+  # collect code blocks and inline code from the parse tree as a table of equal-
+  # length columns: type ('code' or 'code_block'), start_line, start_col,
+  # end_line, end_col (integers), info (fenced info string) and literal (inline
+  # code text); see markdown_code_tokens()
+  d = markdown_code_tokens(text)
+  # code chunk engine name, extracted from a `{engine ...}` info string; a plain
+  # ```r fence (info not starting with `{`) yields '' and is dropped below
+  r = paste0('^[{]+', rx_engine, '.*')
+  info = d$info; info[is.na(info)] = ''
+  d$engine = ifelse(grepl(r, info), sub(r, '\\1', info), '')
   # code blocks must have non-empty info strings
-  m = m[, m[2, ] != 'code_block' | m[8, ] != '', drop = FALSE]
+  d = tok_subset(d, d$type != 'code_block' | d$engine != '')
 
   res = list()
   # add a block of text and the line range info
@@ -61,56 +67,40 @@ crack = function(input, text = NULL) {
 
   n = length(text)
   i = 1L  # the possible start line number of text blocks
-  for (j in which(m[2, ] == 'code_block')) {
-    # start (3) and end (5) line numbers for code chunks
-    pos = as.integer(m[c(3, 5), j]); i1 = pos[1]; i2 = pos[2]
+  for (j in which(d$type == 'code_block')) {
+    i1 = d$start_line[j]; i2 = d$end_line[j]  # start/end line numbers of the chunk
     # add the possible text block before the current code chunk
     if (i1 > i) add_block(i, i1 - 1L, type = 'text_block')
     # add the code chunk
-    add_block(i1, i2, info = m[8, j], type = 'code_chunk')
+    add_block(i1, i2, info = d$engine[j], type = 'code_chunk')
     i = i2 + 1L  # the earliest line for the next text block is next line
   }
   # if there are lines remaining, they must be a text block
   if (i <= n) add_block(i, n, type = 'text_block')
 
-  if (!length(m)) return(res)
+  if (length(d$type) == 0) return(res)
 
   set_error_handler(input)
 
-  m = m[, m[2, ] == 'code', drop = FALSE]
-  # find out inline code `{lang} expr`
-  rx_inline = '^\\s*[{](.+?)[}]\\s+(.+?)\\s*$'
+  d = tok_subset(d, d$type == 'code')
+  # find out inline code `{lang} expr`; the `{...}` part must start with an
+  # engine name right after `{` (no leading space), so that literal backtick
+  # text containing brace objects (e.g., a JS object `{ a: { b } }`) is not
+  # mistaken for inline code
+  rx_inline = '^\\s*[{]([a-zA-Z0-9_]+.*?)[}]\\s+(.+?)\\s*$'
   # look for `r expr` if `{lang}` not found (for compatibility with knitr)
-  if (!any(j <- grepl(rx_inline, m[9, ])) && getOption('litedown.enable.knitr_inline', FALSE)) {
+  if (!any(j <- grepl(rx_inline, d$literal)) && getOption('litedown.enable.knitr_inline', FALSE)) {
     rx_inline = '^(r) +(.+?)\\s*$'
-    j = grepl(rx_inline, m[9, ])
+    j = grepl(rx_inline, d$literal)
   }
-  m = m[, j, drop = FALSE]
+  d = tok_subset(d, j)
   n_start = uapply(res, function(x) x$lines[1])  # starting line numbers
-  j = findInterval(m[3, ], n_start)  # find which block each inline code belongs to
-  for (i in seq_len(ncol(m))) {
+  j = findInterval(d$start_line, n_start)  # find which block each inline code belongs to
+  for (i in seq_along(d$type)) {
     b = res[[j[i]]]; l = b$lines
     # column position is based on bytes instead of chars; needs to be adjusted to the latter
-    pos = char_pos(text, as.integer(m[3:6, i]))
+    pos = char_pos(text, c(d$start_line[i], d$start_col[i], d$end_line[i], d$end_col[i]))
     i1 = pos[1]; i2 = pos[3]
-    # commonmark::markdown_xml(sourcepos = TRUE) gives wrong column info when
-    # the line has leading spaces (which are ignored), so doublecheck here (in
-    # theory we also need to consider the case i1 != i2 but that's a little too
-    # complicated and may be rare, too)
-    if (i1 == i2 && grepl('^\\s+', ti <- text[i1])) {
-      mi = restore_html(m[9, i])
-      if (substring(ti, pos[2], pos[4]) != mi) {
-        p = base::gregexpr(mi, ti, fixed = TRUE)[[1]]
-        if (length(p) > 1 || p < 1) {
-          save_pos(c(i1, i2)); stop(
-            'Unable to locate the inline code expression ', mi,
-            '. Please file an issue to https://github.com/yihui/litedown/issues ',
-            'with a minimal reproducible example.'
-          )
-        }
-        pos[2] = p; pos[4] = p + attr(p, 'match.length') - 1
-      }
-    }
     s = nchar(b$source)
     # calculate new position of code after we concatenate all lines of this block by \n
     b$col = c(b$col, c(
@@ -175,12 +165,13 @@ crack = function(input, text = NULL) {
       p = rbind(p[1, ] - 1, p[2, ] + 1)
       p = matrix(c(1, p, nchar(x)), nrow = 2)
       x2 = substring(x, p[1, ], p[2, ])  # text
-      # get rid of left-over backticks
+      # get rid of left-over backticks (and the padding space that a multi-
+      # backtick fence adds around the code, e.g., the spaces in `` `code` ``)
       N = length(x2)
-      x2[1] = gsub('`+$', '', x2[1])  # trailing ` of first
-      x2[N] = gsub('^`+', '', x2[N])  # leading ` of last
+      x2[1] = gsub('`+ ?$', '', x2[1])  # trailing ` of first
+      x2[N] = gsub('^ ?`+', '', x2[N])  # leading ` of last
       # ` at both ends for text in the middle
-      if (N > 2) x2[2:(N - 1)] = gsub('^`+|`+$', '', x2[2:(N - 1)])
+      if (N > 2) x2[2:(N - 1)] = gsub('^ ?`+|`+ ?$', '', x2[2:(N - 1)])
       # see if the code is wrapped in $ $
       d1 = substring(x2, nchar(x2), nchar(x2)) == '$'
       d2 = substring(x2, 1, 1) == '$'
@@ -188,13 +179,12 @@ crack = function(input, text = NULL) {
       # position of code c(row1, col1, row2, col2)
       pos = matrix(b$pos, nrow = 4)
       x = as.list(head(c(rbind(x2, c(x1, ''))), -1))
+      # split all `{lang} expr` expressions at once (vectorized over x1)
+      zs = match_one(x1, rx_inline)
       for (i in seq_len(N - 1)) {
-        z = match_one(x1[i], rx_inline)[[1]][-1]
+        z = zs[[i]][-1]
         p2 = pos[, i]; save_pos(p2)
-        xi = list(
-          source = z[2], pos = p2,
-          options = csv_options(gsub('^([^,]+)', 'engine="\\1"', z[1]))
-        )
+        xi = list(source = z[2], pos = p2, options = inline_options(z[1]))
         if (dollar[i]) xi$math = TRUE
         x[[2 * i]] = xi
       }
@@ -206,6 +196,19 @@ crack = function(input, text = NULL) {
     res[[j]] = b
   }
   res
+}
+
+# subset all columns of a code-token table (from markdown_code_tokens(), plus
+# the derived `engine` column added in crack()) by a row index/logical vector
+tok_subset = function(d, i) lapply(d, `[`, i)
+
+# parse the `{...}` part of an inline code expression `{lang} expr` into chunk
+# options. The common case is a bare engine name (e.g. `{r}`), which we turn
+# into list(engine = "r") directly; only fall back to the full csv_options()
+# parser when there are actual options (a comma or `=`).
+inline_options = function(x) {
+  if (grepl('^[[:alnum:]_]+$', x)) list(engine = x) else
+    csv_options(sub('^([^,]+)', 'engine="\\1"', x))
 }
 
 set_error_handler = function(input) {
@@ -249,7 +252,9 @@ char_pos = function(x, p) {
 #' @examples
 #'
 #' # parse R code
-#' res = sieve(c("#' This is _doc_.", '', '#| eval=TRUE', '# this is code', '1 + 1'))
+#' res = sieve(c(
+#'   "#' This is _doc_.", "", "#| eval=TRUE", "# this is code", "1 + 1"
+#' ))
 #' str(res)
 sieve = function(input, text = NULL) {
   text = read_input(input, text); input = attr(text, 'input')
@@ -365,8 +370,8 @@ convert_knitr = function(input) {
 #'   `NULL`, the whole context (an environment) is returned.
 #' @export
 #' @examples
-#' litedown::get_context('input')
-#' litedown::get_context('format')
+#' litedown::get_context("input")
+#' litedown::get_context("format")
 #' names(litedown::get_context())  # all available items
 get_context = function(item = NULL) if (is.null(item)) .env else .env[[item]]
 
@@ -454,9 +459,9 @@ block_order = function(res, N = length(res)) {
 #' @export
 #' @examples
 #' library(litedown)
-#' doc = c('```{r}', '1 + 1', '```', '', '$\\pi$ = `{r} pi`.')
+#' doc = c("```{r}", "1 + 1", "```", "", "$\\pi$ = `{r} pi`.")
 #' fuse(doc)
-#' fuse(doc, '.tex')
+#' fuse(doc, ".tex")
 #' fiss(doc)
 fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet = FALSE) {
   text = read_input(input, text); input = attr(text, 'input')
@@ -485,6 +490,9 @@ fuse = function(input, output = NULL, text = NULL, envir = parent.frame(), quiet
   oenv = as.list(.env); on.exit(reset_env(oenv, .env), add = TRUE)
   # use default fig.path/cache.path instead of inheriting (#127)
   nested = isTRUE(.env$in_fuse); .env$in_fuse = TRUE
+  # document-level store: shared with child documents only, so a fuse() call
+  # whose output isn't included in the parent starts afresh
+  .env$doc = .env$child_doc %||% new_env(); .env$child_doc = NULL
   if (nested) reactor(fig.path = NULL, cache.path = NULL)
 
   # set working directory if unset
@@ -713,9 +721,9 @@ fuse_code = function(x, blocks) {
   opts = reactor()
 
   # delayed assignment to evaluate a chunk option only when it is actually used
+  # skip the `order` option since it needs to be eval()ed in block_order()
   lapply(setdiff(names(opts), 'order'), function(i) {
-    # skip the `order` option since it needs to be eval()ed in block_order()
-    if (i != 'order' && is_lang(o <- opts[[i]]))
+    if (is_lang(o <- opts[[i]]))
       delayedAssign(i, eval(o, fuse_env()), environment(), opts)
   })
   # set the working directory before evaluating anything else
@@ -723,7 +731,8 @@ fuse_code = function(x, blocks) {
 
   # fuse child documents (empty the `child` option to avoid infinite recursion)
   if (length(opts$child)) return(uapply(reactor(child = NULL)$child, function(.) {
-    child = .env$child; .env$child = TRUE; on.exit(.env$child <- child)
+    child = .env$child; .env$child = TRUE; .env$child_doc = .env$doc
+    on.exit({ .env$child <- child; .env$child_doc <- NULL })
     fuse(., output = 'markdown', envir = fuse_env(), quiet = TRUE)
   }))
 
@@ -820,8 +829,14 @@ fuse_code = function(x, blocks) {
     type = grep_sub('^record_', '', class(x))[1]
     if (is.na(type)) type = 'output'
     if (type == 'source') {
-      if (!opts$echo) return()
       l2 = attr(x, 'lines')[1]  # starting line number of a code block
+      # `echo` can be a logical value or a numeric vector of line numbers to
+      # include (positive) or exclude (negative) from the source
+      if (is.numeric(e <- opts$echo)) {
+        idx = l2 + seq_along(x) - 1L  # line number of each source line
+        x = x[if (any(e < 0)) !(idx %in% -e) else idx %in% e]
+        if (length(x) == 0) return()
+      } else if (!e) return()
       x = one_string(x)
       if (opts$strip.white) x = trim_blank(x)
     }
@@ -909,22 +924,27 @@ fill_source = function(x, fill, blocks) {
 
 fill_label = function(x, blocks) {
   r = '`<(.+?)>`'
+  found = FALSE  # whether any `<label>` marker was expanded
   for (i in grep(r, x)) {
     ind = sub('^(\\s*).*', '\\1', x[i])  # possible indent
     x[i] = match_replace(x[i], r, function(z) {
       labs = sub(r, '\\1', z)  # chunk label
       j = labs %in% names(blocks)
-      if (any(j)) z[j] = uapply(blocks[labs[j]], function(b) {
-        s = b$source
-        if ((n <- length(s)) > 0) {
-          paste0(c('', rep(ind, n - 1)), s, collapse = '\n')
-        } else ''
-      })
+      if (any(j)) {
+        found <<- TRUE
+        z[j] = uapply(blocks[labs[j]], function(b) {
+          s = b$source
+          if ((n <- length(s)) > 0) {
+            paste0(c('', rep(ind, n - 1)), s, collapse = '\n')
+          } else ''
+        })
+      }
       z
     })
   }
-  # recursion for possible more `<label>` markers
-  if (is.null(i)) x else fill_label(split_lines(x), blocks)
+  # recurse only if a label expanded (its source may hold more markers); a
+  # `<...>` that matches no chunk label is left as-is and must not recurse
+  if (found) fill_label(split_lines(x), blocks) else x
 }
 
 fill_code = function(x, fill) {
@@ -1027,9 +1047,9 @@ interleave = function(res) {
 #'   treated as raw output.
 #' @export
 #' @examples
-#' litedown::raw_text(c('**This**', '_is_', '[Markdown](#).'))
-#' litedown::raw_text('<b>Bold</b>', 'html')
-#' litedown::raw_text('\\textbf{Bold}', 'latex')
+#' litedown::raw_text(c("**This**", "_is_", "[Markdown](#)."))
+#' litedown::raw_text("<b>Bold</b>", "html")
+#' litedown::raw_text("\\textbf{Bold}", "latex")
 raw_text = function(x, format = NULL) {
   if (length(fmt <- sprintf('=%s', format)) == 1) x = fenced_block(x, fmt)
   new_asis(x, TRUE)
@@ -1141,18 +1161,18 @@ new_opts = function() {
 #' @export
 #' @examples
 #' # get options
-#' litedown::reactor('echo')
-#' litedown::reactor(c('echo', 'fig.width'))
+#' litedown::reactor("echo")
+#' litedown::reactor(c("echo", "fig.width"))
 #'
 #' # set options
 #' old = litedown::reactor(echo = FALSE, fig.width = 8)
-#' litedown::reactor(c('echo', 'fig.width'))
+#' litedown::reactor(c("echo", "fig.width"))
 #' litedown::reactor(old)  # restore options
 #'
 #' # use the environment directly
 #' opts = litedown::reactor()
 #' opts$echo
-#' mget(c('echo', 'fig.width'), opts)
+#' mget(c("echo", "fig.width"), opts)
 #' ls(opts)  # built-in options
 reactor = new_opts()
 reactor(
@@ -1202,6 +1222,11 @@ eng_r = function(x, inline = FALSE, ...) {
     hash = opts$cache.hash, extra = opts$cache.extra, keep = opts$cache.keep,
     id = opts$label, rw = opts$cache.rw
   )
+  # source references of the code point to the input file (for tracebacks)
+  # TODO: require xfun >= 0.62.8 (which has `src`) and remove the condition
+  if (!is.null(f <- .env$full_input) && !is.null(x$code_start) &&
+      'src' %in% names(formals(xfun::record)))
+    args$src = list(file = f, line = x$code_start)
   do.call(xfun::record, c(list(code = x$source, envir = fuse_env()), args))
 }
 
@@ -1215,10 +1240,11 @@ eng_md = function(x, inline = FALSE, ...) {
   } else list(new_source(s), new_asis(s))
 }
 
-# the Mermaid engine: put code in ```mermaid and add caption if necessary
-eng_mermaid = function(x, inline = FALSE, ...) {
-  code = fenced_block(src <- x$source, 'mermaid')
+# the Mermaid/Pele engines: put code in ```mermaid (or ```pele) and add caption
+# if necessary
+eng_diagram = function(x, inline = FALSE, ...) {
   opts = reactor()
+  code = fenced_block(src <- x$source, opts$engine)
   code = add_cap(code, opts$fig.cap, opts$label, opts$cap.pos, opts$fig.env)
   if (inline) one_string(c(code, '')) else {
     list(new_source(src), new_asis(code))
@@ -1325,7 +1351,8 @@ eng_exec = function(x, inline = FALSE, ...) {
 #' litedown::engines()  # built-in engines
 engines = new_opts()
 engines(
-  r = eng_r, md = eng_md, mermaid = eng_mermaid, embed = eng_embed,
+  r = eng_r, md = eng_md, mermaid = eng_diagram, pele = eng_diagram,
+  embed = eng_embed,
   css = eng_css, js = eng_js,
   exec = eng_exec, sh = eng_exec, bash = eng_exec, zsh = eng_exec, powershell = eng_exec
 )

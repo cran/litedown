@@ -18,11 +18,14 @@ export(html_format)
 export(latex_format)
 export(mark)
 export(markdown_options)
+export(pkg_articles)
 export(pkg_citation)
 export(pkg_code)
 export(pkg_desc)
+export(pkg_examples)
 export(pkg_manual)
 export(pkg_news)
+export(pkg_site)
 export(raw_text)
 export(reactor)
 export(roam)
@@ -58,7 +61,6 @@ importFrom(xfun,
   new_record,
   normalize_path,
   parse_only,
-  prose_index,
   raw_string,
   read_all,
   read_utf8,
@@ -73,3 +75,9 @@ importFrom(xfun,
   with_ext,
   write_utf8
 )
+useDynLib(litedown,R_code_tokens)
+useDynLib(litedown,R_convert_attrs)
+useDynLib(litedown,R_list_extensions)
+useDynLib(litedown,R_parse_markdown)
+useDynLib(litedown,R_prose_lines)
+useDynLib(litedown,R_render_markdown)
